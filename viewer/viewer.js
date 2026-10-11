@@ -514,15 +514,21 @@ function fail(message) {
 }
 
 // index.json lists, for each ID-month folder, the listing dates with a table in
-// it: a day of the folder's own month as a number, any other date in full.
-// {"2609": [29, 30, "2026-10-01"], "2610": [2, 5, 6]} -> date -> table files.
+// it: a day of the folder's own month as a number, and days of another month in
+// a nested list that starts with that month as YYMM (older indexes wrote such
+// dates in full). {"2609": [29, 30, [2610, 1]], "2610": [[2609, 22, 23], 2, 5]}
+// -> date -> table files.
 function tableFiles(index) {
   const files = {};
+  const yearOf = (yymm) => (Number(String(yymm).padStart(4, "0").slice(0, 2)) >= 91 ? 1900 : 2000) +
+    Number(String(yymm).padStart(4, "0").slice(0, 2));
+  const iso = (yymm, day) => `${yearOf(yymm)}-${String(yymm).padStart(4, "0").slice(2)}-${String(day).padStart(2, "0")}`;
   for (const [yymm, entries] of Object.entries(index)) {
-    const year = (Number(yymm.slice(0, 2)) >= 91 ? 1900 : 2000) + Number(yymm.slice(0, 2));
+    const year = yearOf(yymm);
     const start = 1991 + 3 * Math.floor((year - 1991) / 3);
-    for (const e of entries) {
-      const date = typeof e === "number" ? `${year}-${yymm.slice(2)}-${String(e).padStart(2, "0")}` : e;
+    const dates = entries.flatMap((e) => typeof e === "number" ? [iso(yymm, e)]
+      : Array.isArray(e) ? e.slice(1).map((d) => iso(e[0], d)) : [e]);
+    for (const date of dates) {
       (files[date] ??= []).push(`${start}-${start + 2}/${yymm}/${date}.parquet`);
     }
   }

@@ -8,7 +8,7 @@ Design: lsap-meth/midas-arxiv-preprint-hub.md (section "Daily table").
     python scorer/daily_table.py --test         # 5 astro-ph + 5 cs.AI papers, outputs in the work dir
     python scorer/daily_table.py --via api --batch   # Message Batches API (half price, slower)
     python scorer/daily_table.py 2025-03-04     # a past date: opted-in columns only
-    python scorer/daily_table.py 2026-10-05 --backfill   # a missed day, scored like a daily run
+    python scorer/daily_table.py 2026-10-05 --daily      # a past date scored as a daily run
 
 Steps:
   1. Fetch. The arXiv API cannot query by announcement date, so the current
@@ -87,6 +87,8 @@ DEADLINE_HOUR = 14  # arXiv's daily submission deadline, 14:00 ET (unverified fo
 LISTING_CATEGORIES = ["astro-ph", "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE",
                       "astro-ph.IM", "astro-ph.SR", "cs.AI"]
 PAGE = 500  # results per arXiv API page
+DAILY_STATUSES = ("active", "no-legacy")  # participants scored on each new listing
+LEGACY_STATUSES = ("active",)  # participants scored on past listings (the legacy survey)
 MAX_TOKENS = 16000
 SCORE_ATTEMPTS = 3  # direct mode: tries per chunk when the reply is unusable
 BATCH_ROUNDS = 3  # batch mode: resubmissions of failed requests
@@ -409,8 +411,7 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
         if date < dt.datetime.now(EASTERN).date():
             papers = fetch_past_listing(date)
             if not papers:
-                raise MapHubError(f"no new submissions found for the listing dated {date} "
-                                  "(a holiday?)")
+                log(f"  no new submissions in astro-ph or cs.AI for the listing dated {date}")
             start, end = listing_window(date)
             write_json(saved, papers)
             write_json(saved.with_name("window.json"),
@@ -457,9 +458,10 @@ def load_participants(folder: Path, legacy: bool = False) -> dict[str, str]:
     """Pseudonym -> portfolio text, for the participants to score.
 
     participants.json in the portfolios repo gives each participant's status:
-    only "active" ones are scored, and for a past date (legacy) only those who
-    opted in to the legacy survey. A portfolio folder with no entry there is
-    skipped with a warning, so a new portfolio never breaks the daily run.
+    "active" (scored daily and in the legacy survey, past listings), "no-legacy"
+    (scored daily only), "paused" or "left" (not scored). With legacy=True (a past
+    listing), only "active" participants are scored. A portfolio folder with no
+    entry there is skipped with a warning, so a new portfolio never breaks the run.
     """
     if not folder.is_dir():
         raise MapHubError(f"portfolio folder {folder} not found")
@@ -478,15 +480,15 @@ def load_participants(folder: Path, legacy: bool = False) -> dict[str, str]:
         if entry is None:
             log(f"Warning: {sub.name} has a portfolio but no entry in participants.json; not scored")
             continue
-        if entry.get("status") != "active" or (legacy and not entry.get("legacy")):
+        if entry.get("status") not in (LEGACY_STATUSES if legacy else DAILY_STATUSES):
             continue
         found[sub.name] = portfolio.read_text(encoding="utf-8").strip()
     for who in status:
-        if not (folder / who / "portfolio.md").is_file() and status[who].get("status") == "active":
+        if not (folder / who / "portfolio.md").is_file() and status[who].get("status") in DAILY_STATUSES:
             log(f"Warning: {who} is active in participants.json but has no portfolio.md")
     if not found:
         raise MapHubError(f"no participants to score under {folder}"
-                          + (" (none opted in to the legacy survey)" if legacy else ""))
+                          + (" (none with status active, for the legacy survey)" if legacy else ""))
     return found
 
 
@@ -745,12 +747,19 @@ def table_path(tables: Path, yymm: str, date: dt.date) -> Path:
 def read_index(tables: Path) -> dict[str, list]:
     """index.json: for each ID-month folder, the listing dates that have a table in it.
 
-    A day in the folder's own month is written as a number, any other date in
-    full: {"2609": [29, 30, "2026-10-01"], "2610": [2, 5, 6]}. A static website
-    cannot list folders, so the viewer reads this to find the days and files.
+    A day in the folder's own month is a number; days of another month are grouped
+    in a nested list that starts with that month as YYMM:
+    {"2609": [29, 30, [2610, 1]], "2610": [[2609, 22, 23], 2, 5, 6]}. A static
+    website cannot list folders, so the viewer reads this to find the days and files.
+    (Older indexes wrote other-month dates in full, "2026-10-01"; both are read.)
     """
     path = tables / "index.json"
     return read_json(path) if path.exists() else {}
+
+
+def yymm_date(yymm: str | int, day: int) -> str:
+    yymm = f"{int(yymm):04d}"
+    return f"{yymm_year(yymm)}-{yymm[2:]}-{day:02d}"
 
 
 def index_dates(tables: Path) -> dict[str, list[str]]:
@@ -758,26 +767,44 @@ def index_dates(tables: Path) -> dict[str, list[str]]:
     dates: dict[str, list[str]] = {}
     for yymm, entries in read_index(tables).items():
         for e in entries:
-            day = (f"{yymm_year(yymm)}-{yymm[2:]}-{e:02d}" if isinstance(e, int) else e)
-            dates.setdefault(day, []).append(yymm)
+            if isinstance(e, int):
+                days = [yymm_date(yymm, e)]
+            elif isinstance(e, list):
+                days = [yymm_date(e[0], d) for d in e[1:]]
+            else:
+                days = [e]
+            for day in days:
+                dates.setdefault(day, []).append(yymm)
     return dict(sorted(dates.items()))
 
 
-def write_index(tables: Path, date: dt.date, yymms: list[str]) -> None:
-    """Record that `date` has tables in the folders `yymms` (and in no others)."""
-    index = read_index(tables)
-    iso = date.isoformat()
-    for yymm in index:
-        index[yymm] = [e for e in index[yymm] if e != iso and not (
-            isinstance(e, int) and yymm_year(yymm) == date.year and int(yymm[2:]) == date.month and e == date.day)]
-    for yymm in yymms:
-        own = yymm_year(yymm) == date.year and int(yymm[2:]) == date.month
-        index.setdefault(yymm, []).append(date.day if own else iso)
-    as_date = lambda yymm, e: (f"{yymm_year(yymm)}-{yymm[2:]}-{e:02d}" if isinstance(e, int) else e)
-    ordered = {yymm: sorted(index[yymm], key=lambda e: as_date(yymm, e))
-               for yymm in sorted(index, key=lambda y: (yymm_year(y), y[2:])) if index[yymm]}
+def write_index(tables: Path, date: dt.date | None, yymms: list[str]) -> None:
+    """Record that `date` has tables in the folders `yymms` (and in no others), and
+    write index.json in its compact form. With date None, only rewrite the file."""
+    folders: dict[str, set[str]] = {}
+    for day, held in index_dates(tables).items():
+        for yymm in held:
+            folders.setdefault(yymm, set()).add(day)
+    if date is not None:
+        for days in folders.values():
+            days.discard(date.isoformat())
+        for yymm in yymms:
+            folders.setdefault(yymm, set()).add(date.isoformat())
+    index = {}
+    for yymm in sorted((y for y in folders if folders[y]), key=lambda y: (yymm_year(y), y[2:])):
+        entries, groups = [], {}
+        for day in sorted(folders[yymm]):
+            d = dt.date.fromisoformat(day)
+            own = f"{d.year % 100:02d}{d.month:02d}"
+            if own == yymm:
+                entries.append((day, d.day))
+            else:
+                groups.setdefault(own, []).append(d.day)
+        for own, days in groups.items():  # a nested list sorts by its first day
+            entries.append((yymm_date(own, days[0]), [int(own), *days]))
+        index[yymm] = [e for _, e in sorted(entries, key=lambda pair: pair[0])]
     # One folder per line keeps the file readable and its diffs small.
-    lines = [f" {json.dumps(k)}: {json.dumps(v)}" for k, v in ordered.items()]
+    lines = [f" {json.dumps(k)}: {json.dumps(v)}" for k, v in index.items()]
     (tables / "index.json").write_text("{\n" + ",\n".join(lines) + "\n}\n", encoding="utf-8")
 
 
@@ -934,13 +961,25 @@ def meta_only(args) -> int:
     return 0
 
 
+def write_empty_table(tables: Path, date: dt.date, columns: list[str]) -> Path:
+    """A table with no rows, in the date's own ID-month folder: a past listing with
+    no paper left to score (none submitted, or all scored on another date)."""
+    yymm = f"{date.year % 100:02d}{date.month:02d}"
+    path = table_path(tables, yymm, date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    empty = {"id": pa.array([], pa.string()), **{w: pa.array([], pa.uint8()) for w in columns}}
+    pq.write_table(pa.table(empty), path)
+    write_index(tables, date, [yymm])
+    return path
+
+
 def publish_roster(tables: Path, portfolios: Path) -> None:
     """tables/participants.json: who is active and whose column is hidden, for the
     public viewer. The tables never change when someone pauses or leaves; the
     viewer hides the hidden columns and greys out visible ones not active."""
     status = read_json(portfolios / "participants.json")["participants"]
     write_json(tables / "participants.json", {
-        "active": sorted(w for w, e in status.items() if e.get("status") == "active" and not e.get("hidden")),
+        "active": sorted(w for w, e in status.items() if e.get("status") in DAILY_STATUSES and not e.get("hidden")),
         "hidden": sorted(w for w, e in status.items() if e.get("hidden")),
     })
 
@@ -1001,9 +1040,10 @@ def main() -> int:
     ap.add_argument("--test", action="store_true",
                     help="score 5 astro-ph and 5 cs.AI papers; outputs go to the work dir")
     ap.add_argument("--batch", action="store_true", help="use the Message Batches API")
-    ap.add_argument("--backfill", action="store_true",
-                    help="score a past date like a daily run: all active participants, via the API "
-                         "(default for past dates: the legacy survey)")
+    ap.add_argument("--daily", action="store_true",
+                    help="score a past date as a daily run: every participant scored daily, "
+                         "status no-legacy included (default for past dates: the legacy survey, "
+                         "status active only)")
     ap.add_argument("--meta-only", action="store_true",
                     help="write a date's metadata fallback (papers DataCite lacks) from its table, without scoring")
     ap.add_argument("--via", choices=["api", "claude-code"],
@@ -1022,7 +1062,7 @@ def main() -> int:
                  "real runs follow the configuration log")
     # A listing dated before today (Eastern time) is a past date.
     past = args.date is not None and args.date < dt.datetime.now(EASTERN).date()
-    legacy = past and not args.backfill  # a past date is the legacy survey unless backfilled
+    legacy = past and not args.daily  # a past date is the legacy survey unless scored as a daily run
     via = args.via or "claude-code"
     if via == "claude-code" and args.batch:
         ap.error("--batch works only with --via api")
@@ -1035,7 +1075,7 @@ def main() -> int:
                               "Claude Code serves only the columns listed there")
         skipped = [w for w in own if w not in portfolios]
         if skipped:
-            log(f"Not serving {', '.join(skipped)}: inactive, not opted in, or no portfolio")
+            log(f"Not serving {', '.join(skipped)}: not scored on this listing (status), or no portfolio")
         kept = {w: portfolios[w] for w in own if w in portfolios}
         if not kept:
             raise MapHubError("none of MAPHUB_OWN_PARTICIPANTS can be served")
@@ -1066,8 +1106,17 @@ def main() -> int:
                 log(f"Skipping {len(dupes)} papers already scored on another date: {', '.join(sorted(dupes)[:5])}"
                     + (" ..." if len(dupes) > 5 else ""))
                 papers = [p for p in papers if p["id"] not in dupes]
-            if not papers:
+            if not papers and not past:
                 log(f"Every paper of {date} is already scored on another date; nothing to do.")
+                return 0
+            if not papers:
+                # A past listing with nothing left to score still gets a table, an empty
+                # one, so that every weekday has a table and backfills move on.
+                columns = sorted(load_participants(args.portfolios, legacy=legacy))
+                path = write_empty_table(args.tables, date, columns)
+                log(f"{date}: nothing to score; wrote an empty table, {path}")
+                publish_roster(args.tables, args.portfolios)
+                write_commit_message(args, date, cfg, via, columns, 0, len(dupes))
                 return 0
         tables = args.tables
         if args.test:

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""MapHub's local runs through Claude Code: the latest listing, and backfills one day at a time.
+"""MapHub's local runs through Claude Code: the latest listing, and backfills.
 
-    python scorer/local_run.py latest   # (or l) score the current listing; commit it with
-                                        # any pending backfills as one commit, and push
-    python scorer/local_run.py back     # (or b) score one listing further back; commit locally
-    python scorer/local_run.py push     # (or p) push pending backfills without a new listing
+    mh -l, --latest      score the current listing; fold it with any waiting backfills
+                         into one commit, and push
+    mh -b, --back        backfill one listing: a day the morning runs missed, else the
+                         weekday before the earliest table; commit locally
+    mh -bb, --back-all   backfill listing after listing until the usage limit stops it
+    mh -p, --push        push waiting backfills without a new listing
+    mh -y, --yes         push without asking to confirm the commit message
 
-Every table gets all active participants' columns, scored through Claude Code
-(daily_table.py --via claude-code). One commit per day: a backfill is committed
-locally and waits, and the next `latest` (or `push`) folds the waiting commits
-and the new table into one commit, keeping each table's provenance from the
-scorer. The push starts "Publish viewer". Run `back` as often as usage allows;
-each run scores a single day, so usage can be checked between runs.
+(`mh` runs this script.) Every mode first finishes a day left unfinished in .work/,
+say by the usage limit: a backfill day is completed and committed locally, the
+latest listing is completed, committed and pushed. Every table gets all active
+participants' columns, scored through Claude Code (daily_table.py --via
+claude-code). One commit per day: backfills are committed locally and wait, and
+the next --latest (or --push) folds them into one commit, keeping each table's
+provenance from the scorer. The push starts "Publish viewer".
 """
 
 from __future__ import annotations
@@ -37,6 +41,11 @@ SUBJECT = re.compile(r"^Table for (\d{4}-\d{2}-\d{2}) \(via ([\w-]+)\)$")
 
 class RunError(Exception):
     pass
+
+
+class Incomplete(RunError):
+    """The scorer stopped partway (exit 2), most likely at the usage limit; its saved
+    requests let the next run finish the day."""
 
 
 def git(repo: Path, *args: str, check: bool = True, env: dict | None = None) -> str:
@@ -77,20 +86,27 @@ def sync() -> None:
         git(ROOT, "rebase", "--continue", env={"GIT_EDITOR": "true"}, check=False)
 
 
-def active_participants() -> list[str]:
-    """Every active participant with a portfolio: the columns each table gets."""
-    return sorted(dtab.load_participants(PORTFOLIOS))
+def active_participants(legacy: bool = False) -> list[str]:
+    """The participants scored: on a new listing everyone scored daily (status active
+    or no-legacy); on a past listing, the legacy survey (status active)."""
+    return sorted(dtab.load_participants(PORTFOLIOS, legacy=legacy))
 
 
-def score(date: dt.date | None) -> bool:
-    """Run the scorer through Claude Code for all active columns; True if a table was written."""
+def score(date: dt.date | None, daily: bool = False) -> bool:
+    """Run the scorer through Claude Code for all active columns; True if a table was written.
+    A past date is the legacy survey (status active); daily=True scores it as a daily
+    run instead (status no-legacy too), for a morning listing finished later.
+    Raises Incomplete when it stopped partway, RunError on any other failure."""
     message = WORK / "commit-message.txt"
     message.unlink(missing_ok=True)
     command = [sys.executable, str(ROOT / "scorer" / "daily_table.py"), "--via", "claude-code"]
     if date is not None:
-        command += [date.isoformat(), "--backfill"]
+        command += [date.isoformat(), *(["--daily"] if daily else [])]
     env = {**os.environ, "MAPHUB_OWN_PARTICIPANTS": ",".join(active_participants())}
     result = subprocess.run(command, env=env)
+    if result.returncode == 2:
+        raise Incomplete(f"the scorer stopped partway through {date or 'the latest listing'} "
+                         "(the usage limit?); the next run finishes it")
     if result.returncode != 0:
         raise RunError(f"the scorer stopped (exit {result.returncode}); rerun to resume")
     return message.exists()
@@ -136,7 +152,7 @@ def publish(confirm: bool) -> None:
     print("--- commit message ---\n" + message + "----------------------")
     if confirm and not sys.stdin.isatty():
         # No terminal to answer in (e.g. a command run from a chat): leave the commits waiting.
-        print("Not pushed: no terminal to confirm in. Run `mh p` in a terminal, or `mh p --yes`.")
+        print("Not pushed: no terminal to confirm in. Run `mh -p` in a terminal, or `mh -p -y`.")
         return
     if confirm and input("Commit and push? [Y/n] ").strip().lower() not in ("", "y", "yes"):
         print("Not pushed; the commits wait locally.")
@@ -152,11 +168,47 @@ def publish(confirm: bool) -> None:
     shutil.rmtree(WORK, ignore_errors=True)
 
 
+def unfinished() -> list[tuple[dt.date, str]]:
+    """Days started in .work/ but without a table yet, oldest first, each with its
+    kind: "back" for a rebuilt past listing (it leaves window.json beside its saved
+    papers), "latest" for a listing read from the RSS feed. Test runs, which save
+    their scores in a subfolder, do not count."""
+    have = dtab.index_dates(TABLES)
+    days = []
+    for d in sorted(WORK.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")):
+        if d.name not in have and any((d / "scores").glob("*/chunk*.json")):
+            days.append((dt.date.fromisoformat(d.name), "back" if (d / "window.json").exists() else "latest"))
+    return days
+
+
+def finish_unfinished(confirm: bool) -> None:
+    """Complete any day left unfinished: a backfill day is committed locally; the
+    latest listing is committed and pushed (with any waiting backfills)."""
+    latest = False
+    for date, kind in unfinished():
+        print(f"Finishing {date}, left unfinished ({'latest listing' if kind == 'latest' else 'backfill'})")
+        if score(date, daily=kind == "latest"):
+            print(f"Committed locally: {commit_locally()}")
+            latest |= kind == "latest"
+    if latest:
+        publish(confirm)
+
+
 def back_date() -> dt.date:
-    """The weekday before the earliest table: the next listing back."""
+    """The next listing to backfill. Gaps first: the most recent weekday between the
+    earliest and latest tables without a table (a day the morning run missed).
+    With no gaps, the weekday before the earliest table: the next listing back.
+    Holidays are not modelled: a weekday with no arXiv listing gets a table of the
+    submissions it would have held, so no paper is lost or scored twice."""
     dates = sorted(dt.date.fromisoformat(d) for d in dtab.index_dates(TABLES))
     if not dates:
         raise RunError("no tables yet; run `latest` first")
+    done = {d.isoformat() for d in dates}
+    day = dates[-1] - dt.timedelta(days=1)
+    while day > dates[0]:
+        if day.weekday() < 5 and day.isoformat() not in done:
+            return day
+        day -= dt.timedelta(days=1)
     day = dates[0] - dt.timedelta(days=1)
     while day.weekday() >= 5:  # no listings on weekends
         day -= dt.timedelta(days=1)
@@ -165,26 +217,46 @@ def back_date() -> dt.date:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("mode", choices=["latest", "back", "push", "l", "b", "p"],
-                    help="latest (l), back (b) or push (p)")
-    ap.add_argument("--yes", action="store_true", help="push without asking to confirm the message")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("-l", "--latest", action="store_true", help="score the current listing, then push")
+    mode.add_argument("-b", "--back", action="count", default=0,
+                      help="backfill one listing; -bb: until the usage limit stops it")
+    mode.add_argument("--back-all", action="store_true", help="the same as -bb")
+    mode.add_argument("-p", "--push", action="store_true", help="push waiting backfills")
+    ap.add_argument("-y", "--yes", action="store_true", help="push without asking to confirm the message")
     args = ap.parse_args()
-    args.mode = {"l": "latest", "b": "back", "p": "push"}.get(args.mode, args.mode)
+    if args.back_all:
+        args.back = 2
+    confirm = not args.yes
     sys.stdout.reconfigure(line_buffering=True)  # keep our lines in order with the scorer's
     dtab.load_env(ROOT / ".env")
     try:
         sync()
-        if args.mode == "back":
-            date = back_date()
-            print(f"Backfilling {date}, all active columns: {', '.join(active_participants())}")
-            if score(date):
+        finish_unfinished(confirm)
+        if args.latest:
+            if score(None):
                 print(f"Committed locally: {commit_locally()}")
-                print(f"{len(pending())} table commit(s) wait for the next `latest` or `push`.")
-            return 0
-        if args.mode == "latest" and score(None):
-            print(f"Committed locally: {commit_locally()}")
-        publish(confirm=not args.yes)
+            publish(confirm)
+        elif args.back:
+            done = 0
+            while True:
+                date = back_date()
+                print(f"Backfilling {date}, columns: {', '.join(active_participants(legacy=True))}")
+                if not score(date):
+                    raise RunError(f"no table was written for {date}; check the scorer's output")
+                print(f"Committed locally: {commit_locally()}")
+                done += 1
+                if args.back == 1:
+                    break
+            print(f"{len(pending())} commit(s) wait for the next --latest or --push.")
+        elif args.push:
+            publish(confirm)
         return 0
+    except Incomplete as e:
+        print(f"Stopped: {e}.")
+        if args.back:
+            print(f"{len(pending())} commit(s) wait for the next --latest or --push.")
+        return 0 if args.back > 1 else 2
     except RunError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
