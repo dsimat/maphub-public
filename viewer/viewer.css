@@ -195,3 +195,27 @@ td.cell.selected-col, tr.selected td.cell {
   td.paper .id-inline::after { content: none; }
   td.paper .byline { display: none; }
 }
+
+/* Top papers: a form above a ranked list, scored by one participant. */
+.top-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  margin: 0 0 12px; padding: 8px 12px; max-width: 760px;
+  background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px;
+}
+.top-form label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.top-form select, .top-form input, .top-form button {
+  height: 30px; border: 1px solid var(--line); border-radius: 6px; padding: 0 8px;
+  background: var(--surface-0); color: var(--text-primary); font: inherit;
+}
+.top-form input[type="number"] { width: 72px; }
+.top-form button { cursor: pointer; background: var(--accent); color: var(--surface-1); border-color: var(--accent); font-weight: 600; }
+table.top th.rank, table.top td.rank, table.top th.when, table.top td.when { width: 1%; white-space: nowrap; }
+table.top td.rank, table.top td.when { background: var(--surface-1); padding: 6px; vertical-align: top; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+table.top td.rank { text-align: right; }
+table.top td.when a { text-decoration: none; }
+table.top td.when a:hover { text-decoration: underline; }
+table.top td.paper .title { font-weight: 500; }
+table.top th.who span { font-weight: 600; color: var(--umich-blue); background: var(--select); border-radius: 4px; padding: 0 4px; }
+@media (max-width: 640px) {
+  table.top th.when, table.top td.when { font-size: 12px; }
+}

@@ -7,6 +7,7 @@
 /            -> viewer/ (index.html, viewer.js, viewer.css)
 /tables/...  -> tables/ at the repo root (or the folder given by --tables)
 /YYYY-MM-DD  -> viewer/index.html (the page reads the date from its URL)
+/top         -> viewer/index.html (the top-papers page)
 """
 
 import argparse
@@ -23,7 +24,7 @@ TABLES = ROOT / "tables"
 class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
         path = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0])
-        if re.fullmatch(r"/\d{4}-\d{2}-\d{2}/?", path):
+        if re.fullmatch(r"/(\d{4}-\d{2}-\d{2}|top)/?", path):
             return str(VIEWER / "index.html")
         base = TABLES if path.startswith("/tables/") else VIEWER
         target = (TABLES / path[len("/tables/"):] if base != VIEWER

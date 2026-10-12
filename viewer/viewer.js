@@ -1,6 +1,8 @@
-// MapHub viewer: one announcement day's scores as a heatmap.
+// MapHub viewer: one announcement day's scores as a heatmap, or one
+// participant's top papers over a range of days.
 //
-// URLs: <base>/ shows the latest day, <base>/YYYY-MM-DD a given day. The page
+// URLs: <base>/ shows the latest day, <base>/YYYY-MM-DD a given day, and
+// <base>/top#p=<who>&from=<date>&to=<date>&n=<n> the top papers. The page
 // reads <base>/tables/index.json (which days exist and their Parquet files)
 // and the day's Parquet files. Titles, authors and primary categories come from
 // DataCite, which holds the metadata of arXiv's DOIs (10.48550/arXiv.<ID>);
@@ -26,11 +28,17 @@ const DATACITE = "https://api.datacite.org/dois";
 const DATACITE_FIELDS = "titles,creators,subjects";
 const SEARCH_BATCH = 100; // DOIs per DataCite search, to keep URLs short
 
+const TOP_N = 20;      // papers shown on the top-papers page unless the URL asks for more or fewer
+const TOP_DAYS = 30;   // its default range: the listings of the last 30 days with a table
+const TOP_MAX = 500;
+
 const $ = (id) => document.getElementById(id);
-const match = location.pathname.match(/^(.*\/)(\d{4}-\d{2}-\d{2})\/?$/);
+// <base>/ is the latest day, <base>/YYYY-MM-DD a given day, <base>/top the top-papers page.
+const match = location.pathname.match(/^(.*\/)(\d{4}-\d{2}-\d{2}|top)\/?$/);
 const BASE = match ? match[1] : location.pathname.replace(/[^/]*$/, "");
 const TABLES = BASE + "tables/";
-const requested = match ? match[2] : null;
+const TOP = match?.[2] === "top";
+const requested = match && !TOP ? match[2] : null;
 
 let day = null;        // {date, papers: [{id, title, authors, n_authors, primary}], people: [...], score: Map}
 let selection = null;  // {kind: "p" | "paper", key}
@@ -130,20 +138,30 @@ function fullId(yymm, row) {
   return old.length === 2 ? `${old[0]}/${yymm}${old[1]}` : `${yymm}.${row}`;
 }
 
-async function loadDay(date, files) {
-  const tables = await Promise.all(files.map(async (file) => {
-    const resp = await fetch(TABLES + file);
-    if (!resp.ok) throw new Error(`${file}: HTTP ${resp.status}`);
-    // The folder (YYMM) supplies the part of the ID the rows leave out.
-    const yymm = file.split("/").at(-2);
-    return { file, yymm, rows: await parquetReadObjects({ file: await resp.arrayBuffer() }) };
-  }));
-  const info = await fetchPaperInfo(tables.flatMap(({ yymm, rows }) => rows.map((r) => fullId(yymm, r.id))));
-  // Rarely, DataCite lacks a paper; then the scorer's fallback file has it.
-  const gaps = tables.filter(({ yymm, rows }) => rows.some((r) => !info[fullId(yymm, r.id)]));
-  for (const extra of await Promise.all(gaps.map(({ file, yymm }) => fetchFallback(file, yymm)))) {
+async function readTable(file) {
+  const resp = await fetch(TABLES + file);
+  if (!resp.ok) throw new Error(`${file}: HTTP ${resp.status}`);
+  // The folder (YYMM) supplies the part of the ID the rows leave out.
+  const yymm = file.split("/").at(-2);
+  return { file, yymm, rows: await parquetReadObjects({ file: await resp.arrayBuffer() }) };
+}
+
+// Titles and authors for the given papers, each {id, file, yymm}: from DataCite,
+// or, for the rare paper DataCite lacks, from the scorer's fallback file.
+async function describe(papers) {
+  const info = await fetchPaperInfo(papers.map((p) => p.id));
+  const gaps = new Map(papers.filter((p) => !info[p.id]).map((p) => [p.file, p.yymm]));
+  for (const extra of await Promise.all([...gaps].map(([file, yymm]) => fetchFallback(file, yymm)))) {
     for (const [id, paper] of Object.entries(extra)) info[id] ??= paper;
   }
+  return info;
+}
+
+const UNAVAILABLE = { title: "(title unavailable)", authors: [], n_authors: 0, primary: "" };
+
+async function loadDay(date, files) {
+  const tables = await Promise.all(files.map(readTable));
+  const info = await describe(tables.flatMap(({ file, yymm, rows }) => rows.map((r) => ({ id: fullId(yymm, r.id), file, yymm }))));
   // A month-boundary date has two files; merge them.
   const people = [...new Set(tables.flatMap((t) => t.rows.length ? Object.keys(t.rows[0]) : []))]
     .filter((k) => k !== "id" && !roster.hidden.includes(k)).sort();
@@ -152,7 +170,7 @@ async function loadDay(date, files) {
   for (const { yymm, rows } of tables) {
     for (const row of rows) {
       const id = fullId(yymm, row.id);
-      papers.push({ id, missing: !info[id], ...(info[id] ?? { title: "(title unavailable)", authors: [], n_authors: 0, primary: "" }) });
+      papers.push({ id, missing: !info[id], ...(info[id] ?? UNAVAILABLE) });
       for (const who of people) {
         if (row[who] != null) score.set(`${id}|${who}`, Number(row[who]));
       }
@@ -302,6 +320,20 @@ function el(tag, attrs = {}, ...kids) {
   return node;
 }
 
+// The first authors and the primary category; each name links to arXiv's author
+// search, the rest is plain text.
+function byline(p) {
+  const parts = [];
+  p.authors.forEach((a, i) => {
+    if (i) parts.push(", ");
+    parts.push(a.query ? el("a", { class: "author", href: authorUrl(a.query, p.primary), target: "_blank", rel: "noopener",
+      title: `arXiv papers by ${a.query}` }, a.name) : a.name);
+  });
+  if (p.n_authors > p.authors.length) parts.push(" et al.");
+  if (p.primary) parts.push(`${parts.length ? " · " : ""}${p.primary}`);
+  return parts;
+}
+
 function render() {
   const { papers, people, personSim, paperSim } = arrange();
   const table = $("heatmap");
@@ -320,15 +352,6 @@ function render() {
 
   const body = el("tbody");
   for (const p of papers) {
-    // Each name links to arXiv's author search; the rest is plain text.
-    const byline = [];
-    p.authors.forEach((a, i) => {
-      if (i) byline.push(", ");
-      byline.push(a.query ? el("a", { class: "author", href: authorUrl(a.query, p.primary), target: "_blank", rel: "noopener",
-        title: `arXiv papers by ${a.query}` }, a.name) : a.name);
-    });
-    if (p.n_authors > p.authors.length) byline.push(" et al.");
-    if (p.primary) byline.push(`${byline.length ? " · " : ""}${p.primary}`);
     const tr = el("tr", { class: selection?.kind === "paper" && selection.key === p.id ? "selected" : "" },
       el("td", { class: "id" }, el("a", { href: `https://arxiv.org/abs/${p.id}`, target: "_blank", rel: "noopener", "data-url": `https://arxiv.org/abs/${p.id}` }, p.id)),
       el("td", { class: "paper" },
@@ -336,7 +359,7 @@ function render() {
         el("div", { class: "authors" },
           // On narrow screens the arXiv column is hidden and the ID shows here instead.
           el("a", { class: "id-inline", href: `https://arxiv.org/abs/${p.id}`, target: "_blank", rel: "noopener", "data-url": `https://arxiv.org/abs/${p.id}` }, p.id),
-          el("span", { class: "byline" }, ...byline))),
+          el("span", { class: "byline" }, ...byline(p)))),
       paperSim ? el("td", { class: "sim" }, fmt(paperSim.get(p.id))) : null);
     for (const who of people) {
       const s = get(p.id, who);
@@ -363,6 +386,10 @@ function render() {
       ? `Papers by relevance to ${selection.key}; participants by similarity (r) to ${selection.key}.`
       : `Papers by similarity (r) to ${selection.key}; participants by its relevance to them.`;
     status.append(el("button", { type: "button", class: "clear", onclick: () => select(null) }, "Clear"));
+    if (selection.kind === "p") {
+      status.append(" ", el("a", { href: `${BASE}top#${topHash({ who: selection.key, to: day.date })}` },
+        `Top papers for ${selection.key} up to this day`));
+    }
   }
   const missing = day.papers.filter((p) => p.missing).length;
   if (missing) status.append(` ${missing} titles could not be loaded; their arXiv links still work.`);
@@ -455,9 +482,17 @@ function wireDates(dates, current) {
   $("prev").onclick = () => prev && go(prev);
   $("next").onclick = () => next && go(next);
   $("home").href = $("latest").href = BASE;
+  $("top").href = BASE + "top";
   // "Latest" keeps the selection too; the MapHub title starts afresh.
   // Set just before the link is followed, so new-tab clicks keep it as well.
   for (const ev of ["pointerdown", "focus"]) $("latest").addEventListener(ev, () => { $("latest").href = BASE + keep(); });
+  // "Top papers" takes a selected participant along.
+  for (const ev of ["pointerdown", "focus"]) {
+    $("top").addEventListener(ev, () => {
+      const who = selection?.kind === "p" ? selection.key : null;
+      $("top").href = BASE + "top" + (who ? `#${topHash({ who })}` : "");
+    });
+  }
 }
 
 // The calendar shows one month: days with a table are buttons, other days plain
@@ -506,6 +541,153 @@ function wireCalendar(dates, current, go) {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") open(false); });
 }
 
+// ---------------------------------------------------------------- top papers
+
+// One participant's highest-scored papers over a range of listing dates. Only
+// the participant's column of each day's table is used, and only the papers
+// shown get titles from DataCite, so a long range stays quick.
+
+function topHash({ who, from, to, n }) {
+  const params = new URLSearchParams();
+  if (who) params.set("p", who);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (n) params.set("n", String(n));
+  return params.toString();
+}
+
+function readTopHash(dates) {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v ?? "");
+  const to = isDate(params.get("to")) ? params.get("to") : dates.at(-1);
+  // By default, the last TOP_DAYS listings up to `to`.
+  const upTo = dates.filter((d) => d <= to);
+  const from = isDate(params.get("from")) ? params.get("from") : upTo.at(-TOP_DAYS) ?? upTo[0] ?? to;
+  const n = Math.min(TOP_MAX, Math.max(1, parseInt(params.get("n"), 10) || TOP_N));
+  return { who: params.get("p"), from, to, n };
+}
+
+// Every visible participant who has a column in the latest table, active ones first.
+async function topPeople(files, dates) {
+  const latest = await Promise.all(files[dates.at(-1)].map(readTable));
+  const columns = [...new Set(latest.flatMap((t) => t.rows.length ? Object.keys(t.rows[0]) : []))]
+    .filter((k) => k !== "id" && !roster.hidden.includes(k));
+  return columns.sort((a, b) => (isActive(b) - isActive(a)) || a.localeCompare(b));
+}
+
+async function mainTop(files, dates) {
+  document.title = "MapHub: top papers";
+  let people;
+  try {
+    people = await topPeople(files, dates);
+  } catch (e) {
+    return fail(`Could not load the latest table (${e.message}).`);
+  }
+  const query = readTopHash(dates);
+  if (!people.includes(query.who)) query.who = null;
+  selection = query.who ? { kind: "p", key: query.who } : null; // so the date arrows keep it
+
+  // The form: participant, first and last listing dates, number of papers.
+  const option = (who) => el("option", { value: who, selected: who === query.who },
+    isActive(who) ? who : `${who} (inactive)`);
+  const pick = el("select", { id: "top-who", "aria-label": "Participant" },
+    el("option", { value: "", disabled: true, selected: !query.who }, "Choose a participant"), ...people.map(option));
+  const dateBox = (id, value, label) => el("input", { id, type: "date", value, min: dates[0], max: dates.at(-1), "aria-label": label });
+  const from = dateBox("top-from", query.from, "First listing date");
+  const to = dateBox("top-to", query.to, "Last listing date");
+  const count = el("input", { id: "top-n", type: "number", min: 1, max: TOP_MAX, value: query.n, "aria-label": "Number of papers" });
+  const form = el("form", { class: "top-form" },
+    el("label", {}, "Participant ", pick),
+    el("label", {}, "From ", from),
+    el("label", {}, "to ", to),
+    el("label", {}, "Top ", count),
+    el("button", { type: "submit" }, "Show"));
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    let [f, t] = [from.value, to.value];
+    if (f && t && f > t) [f, t] = [t, f];
+    location.hash = topHash({ who: pick.value, from: f, to: t, n: count.value });
+  });
+  addEventListener("hashchange", () => location.reload());
+  $("status").before(form);
+
+  if (!query.who) {
+    $("status").textContent = "Choose a participant to see their highest-scored papers over a range of listing dates.";
+    return;
+  }
+  const range = dates.filter((d) => d >= query.from && d <= query.to);
+  if (!range.length) return fail(`No tables between ${query.from} and ${query.to}.`);
+
+  // Read the participant's column of each day's table, a few days at a time.
+  const scored = []; // {id, row, file, yymm, date, score}
+  let done = 0;
+  const status = $("status");
+  const progress = () => { status.textContent = `Reading ${done} of ${range.length} days…`; };
+  progress();
+  try {
+    const queue = range.flatMap((date) => files[date].map((file) => ({ date, file })));
+    const worker = async () => {
+      for (let job; (job = queue.shift());) {
+        const { yymm, rows } = await readTable(job.file);
+        for (const row of rows) {
+          if (row[query.who] != null) {
+            scored.push({ id: fullId(yymm, row.id), file: job.file, yymm, date: job.date, score: Number(row[query.who]) });
+          }
+        }
+        if (!queue.some((q) => q.date === job.date)) { done++; progress(); }
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+  } catch (e) {
+    return fail(`Could not load the tables (${e.message}).`);
+  }
+  // Highest score first; ties: the newer listing, then the arXiv ID.
+  scored.sort((a, b) => b.score - a.score || b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+  const top = scored.slice(0, query.n);
+  status.textContent = `Fetching titles for ${top.length} papers…`;
+  const info = await describe(top);
+  const shown = top.map((p) => ({ ...p, missing: !info[p.id], ...(info[p.id] ?? UNAVAILABLE) }));
+  renderTop(query, range, scored.length, shown);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderTop(query, range, scored.length, shown));
+}
+
+function renderTop(query, range, total, papers) {
+  const short = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const table = $("heatmap");
+  table.classList.add("top");
+  table.replaceChildren(el("thead", {}, el("tr", {},
+    el("th", { scope: "col", class: "rank" }, "#"),
+    el("th", { scope: "col", class: "id-head" }, "arXiv"),
+    el("th", { scope: "col" }, "Paper"),
+    el("th", { scope: "col", class: "when" }, "Listing"),
+    el("th", { scope: "col", class: "who selected" }, el("span", {}, query.who)))));
+  const body = el("tbody");
+  papers.forEach((p, i) => {
+    const c = scoreColor(p.score);
+    body.append(el("tr", {},
+      el("td", { class: "rank" }, String(i + 1)),
+      el("td", { class: "id" }, el("a", { href: `https://arxiv.org/abs/${p.id}`, target: "_blank", rel: "noopener", "data-url": `https://arxiv.org/abs/${p.id}` }, p.id)),
+      el("td", { class: "paper" },
+        el("span", { class: "title" }, p.title),
+        el("div", { class: "authors" },
+          el("a", { class: "id-inline", href: `https://arxiv.org/abs/${p.id}`, target: "_blank", rel: "noopener" }, p.id),
+          el("span", { class: "byline" }, ...byline(p)))),
+      // The listing date opens that day's heatmap, sorted for the participant.
+      el("td", { class: "when" }, el("a", { href: `${BASE}${p.date}#p=${encodeURIComponent(query.who)}`, title: `The heatmap for ${p.date}` }, short(p.date))),
+      el("td", { class: "cell", style: `background:${c.bg};color:${c.fg}` }, String(p.score))));
+  });
+  table.append(body);
+  const status = $("status");
+  status.classList.remove("error");
+  status.textContent = `The ${papers.length} papers most relevant to ${query.who} among ${total} scored for them ` +
+    `in ${range.length} listings, ${short(range[0])} to ${short(range.at(-1))}; ties go to the newer listing. ` +
+    "A listing date opens that day's heatmap.";
+  const missing = papers.filter((p) => p.missing).length;
+  if (missing) status.append(` ${missing} titles could not be loaded; their arXiv links still work.`);
+  paintLegend();
+  $("legend").hidden = $("scroll").hidden = false;
+}
+
 function fail(message) {
   const status = $("status");
   status.textContent = message;
@@ -552,6 +734,12 @@ async function main() {
     return fail(`Could not load the table index (${e.message}).`);
   }
   const dates = Object.keys(files).sort();
+  roster = { active: people?.active ?? null, hidden: people?.hidden ?? [] };
+  if (TOP) {
+    wireDates(dates, null);
+    if (!dates.length) return fail("No tables yet. The first one appears after the first daily run.");
+    return mainTop(files, dates);
+  }
   const date = requested ?? dates.at(-1);
   wireDates(dates, date);
   if (!date) return fail("No tables yet. The first one appears after the first daily run.");
@@ -561,7 +749,6 @@ async function main() {
       "and a day's table appears only after that day's listing is scored.");
   }
   try {
-    roster = { active: people?.active ?? null, hidden: people?.hidden ?? [] };
     day = await loadDay(date, files[date]);
   } catch (e) {
     return fail(`Could not load the table for ${date} (${e.message}).`);
