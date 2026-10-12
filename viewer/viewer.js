@@ -28,9 +28,8 @@ const DATACITE = "https://api.datacite.org/dois";
 const DATACITE_FIELDS = "titles,creators,subjects";
 const SEARCH_BATCH = 100; // DOIs per DataCite search, to keep URLs short
 
-const TOP_N = 20;      // papers shown on the top-papers page unless the URL asks for more or fewer
-const TOP_DAYS = 30;   // its default range: the listings of the last 30 days with a table
-const TOP_MAX = 500;
+const TOP_N = 50;      // papers shown on the top-papers page unless the URL asks for more or fewer
+const TOP_MAX = 500;   // its default range is the past calendar month, up to the latest table
 
 const $ = (id) => document.getElementById(id);
 // <base>/ is the latest day, <base>/YYYY-MM-DD a given day, <base>/top the top-papers page.
@@ -387,7 +386,7 @@ function render() {
       : `Papers by similarity (r) to ${selection.key}; participants by its relevance to them.`;
     status.append(el("button", { type: "button", class: "clear", onclick: () => select(null) }, "Clear"));
     if (selection.kind === "p") {
-      status.append(" ", el("a", { href: `${BASE}top#${topHash({ who: selection.key, to: day.date })}` },
+      status.append(el("a", { class: "top-link", href: `${BASE}top#${topHash({ who: selection.key, to: day.date })}` },
         `Top papers for ${selection.key} up to this day`));
     }
   }
@@ -543,13 +542,14 @@ function wireCalendar(dates, current, go) {
 
 // ---------------------------------------------------------------- top papers
 
-// One participant's highest-scored papers over a range of listing dates. Only
-// the participant's column of each day's table is used, and only the papers
+// One participant's highest-scored papers over a range of listing dates, with
+// the scores of any other participants chosen for comparison. Only the papers
 // shown get titles from DataCite, so a long range stays quick.
 
-function topHash({ who, from, to, n }) {
+function topHash({ who, also, from, to, n }) {
   const params = new URLSearchParams();
   if (who) params.set("p", who);
+  if (also?.length) params.set("also", also.join(","));
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (n) params.set("n", String(n));
@@ -560,11 +560,17 @@ function readTopHash(dates) {
   const params = new URLSearchParams(location.hash.slice(1));
   const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v ?? "");
   const to = isDate(params.get("to")) ? params.get("to") : dates.at(-1);
-  // By default, the last TOP_DAYS listings up to `to`.
-  const upTo = dates.filter((d) => d <= to);
-  const from = isDate(params.get("from")) ? params.get("from") : upTo.at(-TOP_DAYS) ?? upTo[0] ?? to;
+  // By default, the past calendar month: from the same day a month before `to`
+  // (the month's last day when that day does not exist, as March 31 -> February 28).
+  const monthBefore = (d) => {
+    const [y, m, dd] = d.split("-").map(Number);
+    const last = new Date(Date.UTC(y, m - 1, 0)).getUTCDate();
+    return new Date(Date.UTC(y, m - 2, Math.min(dd, last))).toISOString().slice(0, 10);
+  };
+  const from = isDate(params.get("from")) ? params.get("from") : monthBefore(to);
   const n = Math.min(TOP_MAX, Math.max(1, parseInt(params.get("n"), 10) || TOP_N));
-  return { who: params.get("p"), from, to, n };
+  const also = (params.get("also") ?? "").split(",").filter(Boolean);
+  return { who: params.get("p"), also, from, to, n };
 }
 
 // Every visible participant who has a column in the latest table, active ones first.
@@ -585,6 +591,7 @@ async function mainTop(files, dates) {
   }
   const query = readTopHash(dates);
   if (!people.includes(query.who)) query.who = null;
+  query.also = query.also.filter((w) => people.includes(w) && w !== query.who);
   selection = query.who ? { kind: "p", key: query.who } : null; // so the date arrows keep it
 
   // The form: participant, first and last listing dates, number of papers.
@@ -596,17 +603,30 @@ async function mainTop(files, dates) {
   const from = dateBox("top-from", query.from, "First listing date");
   const to = dateBox("top-to", query.to, "Last listing date");
   const count = el("input", { id: "top-n", type: "number", min: 1, max: TOP_MAX, value: query.n, "aria-label": "Number of papers" });
+  // Other participants whose scores are shown beside, for the same papers.
+  const others = people.map((who) => el("label", { class: "also-who" },
+    el("input", { type: "checkbox", value: who, checked: query.also.includes(who) }), ` ${who}`));
+  const alsoBox = el("fieldset", { class: "also" }, el("legend", {}, "Also show"), ...others);
+  const syncAlso = () => others.forEach((l) => {
+    const box = l.querySelector("input");
+    box.disabled = box.value === pick.value;
+    l.hidden = box.disabled;
+  });
+  pick.addEventListener("change", syncAlso);
+  syncAlso();
   const form = el("form", { class: "top-form" },
     el("label", {}, "Participant ", pick),
     el("label", {}, "From ", from),
     el("label", {}, "to ", to),
     el("label", {}, "Top ", count),
+    alsoBox,
     el("button", { type: "submit" }, "Show"));
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     let [f, t] = [from.value, to.value];
     if (f && t && f > t) [f, t] = [t, f];
-    location.hash = topHash({ who: pick.value, from: f, to: t, n: count.value });
+    const also = others.map((l) => l.querySelector("input")).filter((b) => b.checked && !b.disabled).map((b) => b.value);
+    location.hash = topHash({ who: pick.value, also, from: f, to: t, n: count.value });
   });
   addEventListener("hashchange", () => location.reload());
   $("status").before(form);
@@ -618,8 +638,9 @@ async function mainTop(files, dates) {
   const range = dates.filter((d) => d >= query.from && d <= query.to);
   if (!range.length) return fail(`No tables between ${query.from} and ${query.to}.`);
 
-  // Read the participant's column of each day's table, a few days at a time.
-  const scored = []; // {id, row, file, yymm, date, score}
+  // Read each day's table, a few days at a time, keeping the participant's
+  // scores and those of the participants shown beside.
+  const scored = []; // {id, file, yymm, date, score, others: {who: score}}
   let done = 0;
   const status = $("status");
   const progress = () => { status.textContent = `Reading ${done} of ${range.length} days…`; };
@@ -631,7 +652,8 @@ async function mainTop(files, dates) {
         const { yymm, rows } = await readTable(job.file);
         for (const row of rows) {
           if (row[query.who] != null) {
-            scored.push({ id: fullId(yymm, row.id), file: job.file, yymm, date: job.date, score: Number(row[query.who]) });
+            const others = Object.fromEntries(query.also.map((w) => [w, row[w] == null ? null : Number(row[w])]));
+            scored.push({ id: fullId(yymm, row.id), file: job.file, yymm, date: job.date, score: Number(row[query.who]), others });
           }
         }
         if (!queue.some((q) => q.date === job.date)) { done++; progress(); }
@@ -660,7 +682,8 @@ function renderTop(query, range, total, papers) {
     el("th", { scope: "col", class: "id-head" }, "arXiv"),
     el("th", { scope: "col" }, "Paper"),
     el("th", { scope: "col", class: "when" }, "Listing"),
-    el("th", { scope: "col", class: "who selected" }, el("span", {}, query.who)))));
+    el("th", { scope: "col", class: "who selected" }, el("span", {}, query.who)),
+    ...query.also.map((w) => el("th", { scope: "col", class: "who" + (isActive(w) ? "" : " inactive"), title: `${w}'s scores for the same papers` }, el("span", {}, w))))));
   const body = el("tbody");
   papers.forEach((p, i) => {
     const c = scoreColor(p.score);
@@ -674,13 +697,20 @@ function renderTop(query, range, total, papers) {
           el("span", { class: "byline" }, ...byline(p)))),
       // The listing date opens that day's heatmap, sorted for the participant.
       el("td", { class: "when" }, el("a", { href: `${BASE}${p.date}#p=${encodeURIComponent(query.who)}`, title: `The heatmap for ${p.date}` }, short(p.date))),
-      el("td", { class: "cell", style: `background:${c.bg};color:${c.fg}` }, String(p.score))));
+      el("td", { class: "cell", style: `background:${c.bg};color:${c.fg}` }, String(p.score)),
+      ...query.also.map((w) => {
+        const s = p.others[w];
+        if (s == null) return el("td", { class: "cell missing", title: `${w}: no score` }, "·");
+        const k = scoreColor(s);
+        return el("td", { class: "cell", style: `background:${k.bg};color:${k.fg}`, title: `${w}: ${s}` }, String(s));
+      })));
   });
   table.append(body);
   const status = $("status");
   status.classList.remove("error");
   status.textContent = `The ${papers.length} papers most relevant to ${query.who} among ${total} scored for them ` +
     `in ${range.length} listings, ${short(range[0])} to ${short(range.at(-1))}; ties go to the newer listing. ` +
+    (query.also.length ? `Beside it, the scores of ${query.also.length > 1 ? query.also.slice(0, -1).join(", ") + " and " + query.also.at(-1) : query.also[0]} for the same papers. ` : "") +
     "A listing date opens that day's heatmap.";
   const missing = papers.filter((p) => p.missing).length;
   if (missing) status.append(` ${missing} titles could not be loaded; their arXiv links still work.`);
