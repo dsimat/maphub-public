@@ -6,6 +6,7 @@
 
 /            -> viewer/ (index.html, viewer.js, viewer.css)
 /tables/...  -> tables/ at the repo root (or the folder given by --tables)
+/config-log.json -> the configuration log at the repo root
 /YYYY-MM-DD  -> viewer/index.html (the page reads the date from its URL)
 /top         -> viewer/index.html (the top-papers page)
 """
@@ -26,6 +27,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0])
         if re.fullmatch(r"/(\d{4}-\d{2}-\d{2}|top)/?", path):
             return str(VIEWER / "index.html")
+        if path == "/config-log.json":
+            return str(ROOT / "config-log.json")
         base = TABLES if path.startswith("/tables/") else VIEWER
         target = (TABLES / path[len("/tables/"):] if base != VIEWER
                   else VIEWER / path.lstrip("/")).resolve()

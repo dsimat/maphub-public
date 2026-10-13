@@ -45,6 +45,13 @@ let selection = null;  // {kind: "p" | "paper", key}
 // every column; hiding happens here. Without the lists, everyone counts as active.
 let roster = { active: null, hidden: [] };
 const isActive = (who) => !roster.active || roster.active.includes(who);
+// From config-log.json: the arXiv listings each configuration follows ("astro-ph", "cs.AI").
+let configs = [];
+function listingsOn(date) {
+  const entry = configs.filter((c) => c.effective <= date).at(-1) ?? configs[0];
+  const names = entry?.listings ?? [];
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join("");
+}
 
 // ---------------------------------------------------------------- loading
 
@@ -375,9 +382,9 @@ function render() {
   const status = $("status");
   status.classList.remove("error");
   if (!selection) {
-    const when = new Date(`${day.date}T12:00:00Z`).toLocaleDateString("en-US",
-      { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
-    status.textContent = `${when}: ${day.papers.length} new papers in astro-ph and cs.AI, ` +
+    const when = longDate(day.date);
+    const listings = listingsOn(day.date);
+    status.textContent = `${when}: ${day.papers.length} new papers${listings ? ` in ${listings}` : ""}, ` +
       `scored for ${day.people.length} participants. Papers by average score; participants by rank correlation (ρ) ` +
       "with the average of the others. Select a participant or a paper title to reorder.";
   } else {
@@ -718,12 +725,15 @@ function renderTop(query, range, total, papers) {
   $("legend").hidden = $("scroll").hidden = false;
 }
 
-function fail(message) {
+function fail(message, error = true) {
   const status = $("status");
   status.textContent = message;
-  status.classList.add("error");
+  status.classList.toggle("error", error);
   $("legend").hidden = $("scroll").hidden = true;
 }
+
+const longDate = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US",
+  { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
 
 // index.json lists, for each ID-month folder, the listing dates with a table in
 // it: a day of the folder's own month as a number, and days of another month in
@@ -760,6 +770,8 @@ async function main() {
     // No index means no table has been written yet.
     files = tableFiles(await getOptionalJSON(TABLES + "index.json", {}));
     people = await getOptionalJSON(TABLES + "participants.json", null);
+    configs = (await getOptionalJSON(BASE + "config-log.json", []))
+      .sort((a, b) => a.effective.localeCompare(b.effective));
   } catch (e) {
     return fail(`Could not load the table index (${e.message}).`);
   }
@@ -782,6 +794,13 @@ async function main() {
     day = await loadDay(date, files[date]);
   } catch (e) {
     return fail(`Could not load the table for ${date} (${e.message}).`);
+  }
+  if (!day.papers.length) {
+    // An empty table: arXiv made no announcement for this listing (a holiday), and its
+    // submissions went out with the next one.
+    const listings = listingsOn(date);
+    return fail(`${longDate(date)}: no new papers${listings ? ` in ${listings}` : ""}. arXiv made no ` +
+      "announcement for this listing (usually a holiday); its submissions appear in the next listing.", false);
   }
   selection = readHash();
   paintLegend();

@@ -6,8 +6,10 @@
   "prompt": "v0",
   "input": "abstract",
   "listing": "new",
+  "listings": ["astro-ph", "cs.AI"],
+  "categories": ["astro-ph", "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE", "astro-ph.IM", "astro-ph.SR", "cs.AI"],
   "chunk_size": 50,
   "fallbacks": "default",
-  "note": "Initial configuration for the 10-paper test."
+  "note": "Initial configuration, chosen after the 10-paper test and the full-day check (DESIGN.md); used for every table since Oct 5, 2026."
  }
 ]

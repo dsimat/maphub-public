@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MapHub's local runs through Claude Code: the latest listing, and backfills.
+"""MapHub's local runs: the latest listing, and backfills.
 
     mh -l, --latest      score the current listing; fold it with any waiting backfills
                          into one commit, and push
@@ -8,12 +8,15 @@
     mh -bb, --back-all   backfill listing after listing until the usage limit stops it
     mh -p, --push        push waiting backfills without a new listing
     mh -y, --yes         push without asking to confirm the commit message
+    --via api            score through the Claude API (ANTHROPIC_API_KEY in .env)
+                         instead of Claude Code
 
 (`mh` runs this script.) Every mode first finishes a day left unfinished in .work/,
 say by the usage limit: a backfill day is completed and committed locally, the
-latest listing is completed, committed and pushed. Every table gets all active
-participants' columns, scored through Claude Code (daily_table.py --via
-claude-code). One commit per day: backfills are committed locally and wait, and
+latest listing is completed, committed and pushed. New listings get a column for
+every participant with status active or no-legacy, backfills (the legacy survey)
+for every participant with status active, scored through Claude Code by default.
+One commit per day: backfills are committed locally and wait, and
 the next --latest (or --push) folds them into one commit, keeping each table's
 provenance from the scorer. The push starts "Publish viewer".
 """
@@ -36,15 +39,12 @@ import daily_table as dtab  # noqa: E402
 TABLES = ROOT / "tables"
 PORTFOLIOS = ROOT / "maphub-portfolios"
 WORK = ROOT / ".work"
+VIA = "claude-code"  # how the scorer sends requests (--via)
 SUBJECT = re.compile(r"^Table for (\d{4}-\d{2}-\d{2}) \(via ([\w-]+)\)$")
 
 
 class RunError(Exception):
     pass
-
-
-class NoAnnouncement(RunError):
-    """The current listing is empty (an arXiv holiday): nothing to score (exit 3)."""
 
 
 class Incomplete(RunError):
@@ -97,13 +97,13 @@ def active_participants(legacy: bool = False) -> list[str]:
 
 
 def score(date: dt.date | None, daily: bool = False) -> bool:
-    """Run the scorer through Claude Code for all active columns; True if a table was written.
+    """Run the scorer for all active columns; True if a table was written.
     A past date is the legacy survey (status active); daily=True scores it as a daily
     run instead (status no-legacy too), for a morning listing finished later.
     Raises Incomplete when it stopped partway, RunError on any other failure."""
     message = WORK / "commit-message.txt"
     message.unlink(missing_ok=True)
-    command = [sys.executable, str(ROOT / "scorer" / "daily_table.py"), "--via", "claude-code"]
+    command = [sys.executable, str(ROOT / "scorer" / "daily_table.py"), "--via", VIA]
     if date is not None:
         command += [date.isoformat(), *(["--daily"] if daily else [])]
     env = {**os.environ, "MAPHUB_OWN_PARTICIPANTS": ",".join(active_participants())}
@@ -111,8 +111,6 @@ def score(date: dt.date | None, daily: bool = False) -> bool:
     if result.returncode == 2:
         raise Incomplete(f"the scorer stopped partway through {date or 'the latest listing'} "
                          "(the usage limit?); the next run finishes it")
-    if result.returncode == 3:
-        raise NoAnnouncement("no announcement today")
     if result.returncode != 0:
         raise RunError(f"the scorer stopped (exit {result.returncode}); rerun to resume")
     return message.exists()
@@ -204,11 +202,13 @@ def back_date() -> dt.date:
     """The next listing to backfill. Gaps first: the most recent weekday between the
     earliest and latest tables without a table (a day the morning run missed).
     With no gaps, the weekday before the earliest table: the next listing back.
-    Holidays are not modelled: a weekday with no arXiv listing gets a table of the
-    submissions it would have held, so no paper is lost or scored twice."""
+    A recent holiday the morning run did not meet is such a gap: rebuilt, its papers
+    are already in the next listing's table, so it gets an empty table, as a holiday
+    met by the morning run does. Older holidays get a table of the submissions they
+    would have held, so no paper is lost or scored twice."""
     dates = sorted(dt.date.fromisoformat(d) for d in dtab.index_dates(TABLES))
     if not dates:
-        raise RunError("no tables yet; run `latest` first")
+        raise RunError("no tables yet; run `mh -l` (--latest) first")
     done = {d.isoformat() for d in dates}
     day = dates[-1] - dt.timedelta(days=1)
     while day > dates[0]:
@@ -230,7 +230,11 @@ def main() -> int:
     mode.add_argument("--back-all", action="store_true", help="the same as -bb")
     mode.add_argument("-p", "--push", action="store_true", help="push waiting backfills")
     ap.add_argument("-y", "--yes", action="store_true", help="push without asking to confirm the message")
+    ap.add_argument("--via", choices=["claude-code", "api"], default="claude-code",
+                    help="score through Claude Code (default) or the Claude API (ANTHROPIC_API_KEY in .env)")
     args = ap.parse_args()
+    global VIA
+    VIA = args.via
     if args.back_all:
         args.back = 2
     confirm = not args.yes
@@ -240,11 +244,8 @@ def main() -> int:
         sync()
         finish_unfinished(confirm)
         if args.latest:
-            try:
-                if score(None):
-                    print(f"Committed locally: {commit_locally()}")
-            except NoAnnouncement:
-                pass  # the scorer said why; push any waiting backfills all the same
+            if score(None):
+                print(f"Committed locally: {commit_locally()}")
             publish(confirm)
         elif args.back:
             done = 0

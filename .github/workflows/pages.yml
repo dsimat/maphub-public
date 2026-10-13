@@ -2,15 +2,15 @@
 #
 # One-time setup: Settings > Pages > Build and deployment > Source: GitHub Actions.
 #
-# Runs on every push that changes the viewer or the tables, such as KC's daily
-# push from scorer/local_run.py.
+# Runs on every push that changes the viewer, the tables or the configuration
+# log, such as the daily push from scorer/local_run.py.
 
 name: Publish viewer
 
 on:
   push:
     branches: [main]
-    paths: ["viewer/**", "tables/**", ".github/workflows/pages.yml"]
+    paths: ["viewer/**", "tables/**", "config-log.json", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -45,6 +45,8 @@ jobs:
           # date from the URL.
           cp _site/index.html _site/404.html
           if [ -d tables ]; then cp -r tables _site/tables; fi
+          # The configuration log names the listings the viewer reports.
+          cp config-log.json _site/
 
       - uses: actions/configure-pages@v6
 

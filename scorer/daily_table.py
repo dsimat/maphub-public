@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """MapHub daily table: score one announcement day's new arXiv submissions.
 
-Design: lsap-meth/midas-arxiv-preprint-hub.md (section "Daily table").
+Design: DESIGN.md (section "Daily table").
 
     python scorer/daily_table.py                # the current listing
     python scorer/daily_table.py 2026-10-05     # same, but check the date first
-    python scorer/daily_table.py --test         # 5 astro-ph + 5 cs.AI papers, outputs in the work dir
+    python scorer/daily_table.py --test         # 5 papers of each listing, outputs in the work dir
     python scorer/daily_table.py --via api --batch   # Message Batches API (half price, slower)
-    python scorer/daily_table.py 2025-03-04     # a past date: opted-in columns only
+    python scorer/daily_table.py 2025-03-04     # a past date: status-active columns only (the legacy survey)
     python scorer/daily_table.py 2026-10-05 --daily      # a past date scored as a daily run
 
 Steps:
@@ -42,8 +42,9 @@ Two ways to send requests (--via):
                The API key is withheld from Claude Code, so it never bills
                the API account.
 
-Exit codes: 0 done, 1 error, 2 incomplete (rerun to resume), 3 no announcement
-(the current listing is empty: an arXiv holiday; nothing to score).
+Exit codes: 0 done, 1 error, 2 incomplete (rerun to resume). A current listing
+that arXiv did not announce (a holiday) gets an empty table, like a past listing
+with nothing left to score.
 """
 
 from __future__ import annotations
@@ -74,19 +75,25 @@ from anthropic.types.messages.batch_create_params import Request
 
 ROOT = Path(__file__).resolve().parent.parent  # the maphub repo
 
-RSS_URL = "https://rss.arxiv.org/rss/astro-ph+cs.AI"
+RSS_BASE = "https://rss.arxiv.org/rss/"  # + the listings, joined by "+"
 API_URL = "https://export.arxiv.org/api/query"
 ARXIV_PAUSE = 3.0  # arXiv API terms: at most one request every 3 seconds
 BUSY_WAITS = (30, 60, 120, 120)  # seconds before retrying a 429 or 503 reply: up to five tries
 DATACITE_URL = "https://api.datacite.org/dois"  # where the viewer gets titles and authors
 DATACITE_BATCH = 100  # DOIs per DataCite search, as in the viewer
-USER_AGENT = "MapHub/0.1 (MIDAS arXiv Preprint Hub)"
+# How this MapHub names itself to arXiv and DataCite; a copy sets its own in .env.
+USER_AGENT_DEFAULT = "MapHub/0.1 (MIDAS arXiv Preprint Hub)"
+user_agent = lambda: os.environ.get("MAPHUB_USER_AGENT") or USER_AGENT_DEFAULT
 
 FIRST_YEAR = 1991  # table folders are 3-year spans aligned with arXiv's first year
 EASTERN = ZoneInfo("America/New_York")
 DEADLINE_HOUR = 14  # arXiv's daily submission deadline, 14:00 ET (unverified for older years)
-LISTING_CATEGORIES = ["astro-ph", "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE",
-                      "astro-ph.IM", "astro-ph.SR", "cs.AI"]
+# The arXiv listings MapHub follows, set from the configuration log (use_listings):
+# "listings" are what arXiv's RSS feed and listing pages show (an archive such as
+# astro-ph, or a category such as cs.AI), and "categories" are what past listings
+# query in the arXiv API, one query each (an archive's subcategories listed too).
+LISTINGS: list[str] = []
+CATEGORIES: list[str] = []
 PAGE = 500  # results per arXiv API page
 DAILY_STATUSES = ("active", "no-legacy")  # participants scored on each new listing
 LEGACY_STATUSES = ("active",)  # participants scored on past listings (the legacy survey)
@@ -112,7 +119,8 @@ NS = {
 }
 
 # Scoring prompts by version. The configuration log names the version in use;
-# keep old versions here so earlier tables stay reproducible.
+# keep old versions here so earlier tables can be traced (exact rescoring is not
+# possible once a model is retired, and repeated runs differ slightly).
 PROMPTS = {
     "v0": {
         "head": """\
@@ -136,10 +144,6 @@ Return only JSON, one object per paper in the order given: {"id": "<arXiv ID>", 
 
 class MapHubError(Exception):
     pass
-
-
-class NoAnnouncement(MapHubError):
-    """The current listing is empty: arXiv announced nothing (a holiday)."""
 
 
 class PartialScores(MapHubError):
@@ -191,7 +195,20 @@ def load_config(path: Path, date: dt.date) -> dict:
         raise MapHubError(f"unknown prompt version {cfg['prompt']!r}")
     if cfg.get("input", "abstract") != "abstract" or cfg.get("listing", "new") != "new":
         raise MapHubError("only input=abstract and listing=new are implemented")
+    if not cfg.get("listings"):
+        raise MapHubError(f"{path.name}: the entry in effect names no listings")
     return cfg
+
+
+def use_listings(cfg: dict) -> None:
+    """Follow the listings (and API categories) of a configuration-log entry."""
+    LISTINGS[:] = cfg["listings"]
+    CATEGORIES[:] = cfg.get("categories") or cfg["listings"]
+
+
+def listings_text() -> str:
+    """'astro-ph or cs.AI', for messages."""
+    return " or ".join(LISTINGS)
 
 
 # ------------------------------------------------------------------------ fetch
@@ -201,7 +218,7 @@ def http_get(url: str) -> bytes:
     """GET with retries. A busy server (429 Too Many Requests, 503 Service
     Unavailable) gets long waits, or the wait its Retry-After asks for; other
     failures get three quick tries."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent()})
     quick, busy = 0, 0
     while True:
         try:
@@ -290,7 +307,7 @@ def from_rss(item) -> dict:
 def fetch_listing() -> tuple[dt.date, dict[str, dict]]:
     """Read the current listing's date and its new submissions from the RSS feed,
     with each item's metadata as a fallback for the API."""
-    root = ET.fromstring(http_get(RSS_URL))
+    root = ET.fromstring(http_get(RSS_BASE + "+".join(LISTINGS)))
     channel = root.find("channel")
     pub = channel.findtext("pubDate") if channel is not None else None
     if not pub:
@@ -342,8 +359,14 @@ def fetch_metadata(ids: list[str], required: bool = True) -> dict[str, dict]:
     return papers
 
 
+def under(category: str, listing: str) -> bool:
+    """Whether a category belongs to a listing: the listing itself, or a subcategory
+    of an archive (astro-ph.CO under astro-ph)."""
+    return category == listing or ("." not in listing and category.startswith(listing + "."))
+
+
 def listed_here(paper: dict) -> bool:
-    return paper["primary"].startswith("astro-ph") or paper["primary"] == "cs.AI"
+    return any(under(paper["primary"], listing) for listing in LISTINGS)
 
 
 def listing_window(date: dt.date) -> tuple[dt.datetime, dt.datetime]:
@@ -385,7 +408,7 @@ def fetch_past_listing(date: dt.date) -> list[dict]:
     found: dict[str, dict] = {}
     # One query per category: an OR of several categories loses results on
     # older dates (128 instead of several hundred for a 2025 listing).
-    for cat in LISTING_CATEGORIES:
+    for cat in CATEGORIES:
         query = f"cat:{cat} AND submittedDate:[{stamp(start)} TO {stamp(end)}]"
         for first in range(0, 30000, PAGE):
             params = urllib.parse.urlencode({"search_query": query, "start": first, "max_results": PAGE,
@@ -402,7 +425,7 @@ def fetch_past_listing(date: dt.date) -> list[dict]:
     when = lambda p: dt.datetime.fromisoformat(p["submitted"].replace("Z", "+00:00"))
     papers = sorted((p for p in found.values() if listed_here(p) and start <= when(p) < end),
                     key=lambda p: p["id"])
-    log(f"  {len(found)} papers in the window, {len(papers)} with astro-ph or cs.AI as primary")
+    log(f"  {len(found)} papers in the window, {len(papers)} with {listings_text()} as primary")
     return papers
 
 
@@ -416,14 +439,14 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
         if date < dt.datetime.now(EASTERN).date():
             papers = fetch_past_listing(date)
             if not papers:
-                log(f"  no new submissions in astro-ph or cs.AI for the listing dated {date}")
+                log(f"  no new submissions in {listings_text()} for the listing dated {date}")
             start, end = listing_window(date)
             write_json(saved, papers)
             write_json(saved.with_name("window.json"),
                        {"source": "arXiv API by submission time", "from_utc": start.isoformat(),
                         "to_utc": end.isoformat()})
             return date, papers
-    log(f"Fetching the current listing from {RSS_URL}")
+    log(f"Fetching the current listing from {RSS_BASE + '+'.join(LISTINGS)}")
     listing_date, rss = fetch_listing()
     ids = list(rss)
     if date is not None and date != listing_date:
@@ -436,8 +459,11 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
         log(f"Papers for {listing_date}: loaded from {saved}")
         return listing_date, read_json(saved)
     if not ids:
-        raise NoAnnouncement(f"no new submissions for the listing dated {listing_date} "
-                             "(no announcement: an arXiv holiday?); nothing to score")
+        # arXiv announced nothing for this date (a holiday): the empty listing gets an
+        # empty table, which the viewer shows as a day without an announcement.
+        log(f"Listing dated {listing_date}: no new submissions (no announcement: an arXiv holiday?)")
+        write_json(saved, [])
+        return listing_date, []
     log(f"Listing dated {listing_date}: {len(ids)} new submissions; fetching metadata")
     meta = fetch_metadata(ids, required=False)
     if lacking := [i for i in ids if i not in meta]:
@@ -452,9 +478,9 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
 
 
 def test_sample(papers: list[dict], per_listing: int = 5) -> list[dict]:
-    astro = [p for p in papers if p["primary"].startswith("astro-ph")][:per_listing]
-    ai = [p for p in papers if p["primary"] == "cs.AI"][:per_listing]
-    return sorted(astro + ai, key=lambda p: p["id"])
+    """The first few papers of each listing."""
+    sample = [p for listing in LISTINGS for p in [q for q in papers if under(q["primary"], listing)][:per_listing]]
+    return sorted({p["id"]: p for p in sample}.values(), key=lambda p: p["id"])
 
 
 # ------------------------------------------------------------------------ score
@@ -861,7 +887,7 @@ def write_tables(tables: Path, date: dt.date, papers, scores: dict[str, dict[str
         path = table_path(tables, yymm, date)
         if path.exists():
             # Keep the columns of participants not scored in this run, e.g. the
-            # daily job's columns when KC's own column is rescored for a past date.
+            # daily job's columns when the designer's own column is rescored for a past date.
             old = pq.read_table(path)
             if sorted(old.column("id").to_pylist()) != order:
                 raise MapHubError(f"{path} lists different papers; not overwriting it")
@@ -899,7 +925,7 @@ def datacite_lacks(ids: list[str]) -> list[str]:
         if pid in found:
             continue
         req = urllib.request.Request(f"{DATACITE_URL}/10.48550/arxiv.{pid}?fields[dois]=titles",
-                                     headers={"User-Agent": USER_AGENT})
+                                     headers={"User-Agent": user_agent()})
         try:
             with urllib.request.urlopen(req, timeout=60):
                 pass
@@ -1014,7 +1040,8 @@ def summarize(scores_dir: Path, participants) -> None:
 # ------------------------------------------------------------------------- main
 
 
-def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_meta=0) -> None:
+def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_meta=0,
+                         note: str | None = None) -> None:
     """Write the commit message for the table just written, to .work/commit-message.txt.
 
     The tables carry no provenance themselves; the commit that adds or changes a
@@ -1031,6 +1058,8 @@ def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_m
              f"Columns: {', '.join(columns)}",
              f"Papers: {n_papers}" + (f" ({n_skipped} already scored on another date, left out)"
                                       if n_skipped else "")]
+    if note:
+        lines.append(note)
     if n_meta:
         lines.append(f"Metadata fallback: {n_meta} papers DataCite lacks, in {date.isoformat()}.meta.json")
     path = args.work / "commit-message.txt"
@@ -1044,7 +1073,7 @@ def main() -> int:
     ap.add_argument("date", nargs="?", type=dt.date.fromisoformat,
                     help="announcement date YYYY-MM-DD (default: the current listing)")
     ap.add_argument("--test", action="store_true",
-                    help="score 5 astro-ph and 5 cs.AI papers; outputs go to the work dir")
+                    help="score 5 papers of each listing; outputs go to the work dir")
     ap.add_argument("--batch", action="store_true", help="use the Message Batches API")
     ap.add_argument("--daily", action="store_true",
                     help="score a past date as a daily run: every participant scored daily, "
@@ -1093,16 +1122,18 @@ def main() -> int:
     try:
         if args.meta_only:
             return meta_only(args)
+        # The configuration log takes effect by run date, so a rerun of an old
+        # listing uses, and is attributed to, the configuration of its run.
+        cfg = load_config(args.config, dt.datetime.now(EASTERN).date())
+        use_listings(cfg)
         date, papers = get_papers(args.work, args.date)
+        announced = bool(papers)  # an empty current listing means no announcement
         if args.date is None and not args.test:
             # Runs are repeated in case arXiv announces late; a listing already in
             # the tables is not scored again (an explicit date forces a rescore).
             if date.isoformat() in index_dates(args.tables):
                 log(f"The current listing ({date}) is already scored; nothing to do.")
                 return 0
-        # The configuration log takes effect by run date, so a rerun of an old
-        # listing uses, and is attributed to, the configuration of its run.
-        cfg = load_config(args.config, dt.datetime.now(EASTERN).date())
         day_dir = args.work / date.isoformat()
         dupes: set[str] = set()
         if not args.test:
@@ -1112,17 +1143,20 @@ def main() -> int:
                 log(f"Skipping {len(dupes)} papers already scored on another date: {', '.join(sorted(dupes)[:5])}"
                     + (" ..." if len(dupes) > 5 else ""))
                 papers = [p for p in papers if p["id"] not in dupes]
-            if not papers and not past:
+            if not papers and announced and not past:
                 log(f"Every paper of {date} is already scored on another date; nothing to do.")
                 return 0
             if not papers:
-                # A past listing with nothing left to score still gets a table, an empty
-                # one, so that every weekday has a table and backfills move on.
+                # A listing with nothing to score still gets a table, an empty one, so that
+                # every weekday has a table and backfills move on: a past listing with no
+                # paper left, or a current listing arXiv did not announce (a holiday).
                 columns = sorted(load_participants(args.portfolios, legacy=legacy))
                 path = write_empty_table(args.tables, date, columns)
                 log(f"{date}: nothing to score; wrote an empty table, {path}")
                 publish_roster(args.tables, args.portfolios)
-                write_commit_message(args, date, cfg, via, columns, 0, len(dupes))
+                write_commit_message(args, date, cfg, via, columns, 0, len(dupes),
+                                     note=None if announced or past else
+                                     "No announcement: arXiv listed no new submissions (a holiday)")
                 return 0
         tables = args.tables
         if args.test:
@@ -1191,9 +1225,6 @@ def main() -> int:
             write_commit_message(args, date, cfg, via, sorted(scores), len(papers), len(dupes),
                                  sum(len(read_json(m)) for m in meta))
         return 0
-    except NoAnnouncement as e:
-        log(str(e)[0].upper() + str(e)[1:])
-        return 3
     except MapHubError as e:
         log(f"Error: {e}")
         return 1
