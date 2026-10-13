@@ -43,6 +43,10 @@ class RunError(Exception):
     pass
 
 
+class NoAnnouncement(RunError):
+    """The current listing is empty (an arXiv holiday): nothing to score (exit 3)."""
+
+
 class Incomplete(RunError):
     """The scorer stopped partway (exit 2), most likely at the usage limit; its saved
     requests let the next run finish the day."""
@@ -107,6 +111,8 @@ def score(date: dt.date | None, daily: bool = False) -> bool:
     if result.returncode == 2:
         raise Incomplete(f"the scorer stopped partway through {date or 'the latest listing'} "
                          "(the usage limit?); the next run finishes it")
+    if result.returncode == 3:
+        raise NoAnnouncement("no announcement today")
     if result.returncode != 0:
         raise RunError(f"the scorer stopped (exit {result.returncode}); rerun to resume")
     return message.exists()
@@ -234,8 +240,11 @@ def main() -> int:
         sync()
         finish_unfinished(confirm)
         if args.latest:
-            if score(None):
-                print(f"Committed locally: {commit_locally()}")
+            try:
+                if score(None):
+                    print(f"Committed locally: {commit_locally()}")
+            except NoAnnouncement:
+                pass  # the scorer said why; push any waiting backfills all the same
             publish(confirm)
         elif args.back:
             done = 0

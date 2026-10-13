@@ -42,7 +42,8 @@ Two ways to send requests (--via):
                The API key is withheld from Claude Code, so it never bills
                the API account.
 
-Exit codes: 0 done, 1 error, 2 incomplete (rerun to resume).
+Exit codes: 0 done, 1 error, 2 incomplete (rerun to resume), 3 no announcement
+(the current listing is empty: an arXiv holiday; nothing to score).
 """
 
 from __future__ import annotations
@@ -135,6 +136,10 @@ Return only JSON, one object per paper in the order given: {"id": "<arXiv ID>", 
 
 class MapHubError(Exception):
     pass
+
+
+class NoAnnouncement(MapHubError):
+    """The current listing is empty: arXiv announced nothing (a holiday)."""
 
 
 class PartialScores(MapHubError):
@@ -431,7 +436,8 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
         log(f"Papers for {listing_date}: loaded from {saved}")
         return listing_date, read_json(saved)
     if not ids:
-        raise MapHubError(f"the listing dated {listing_date} has no new submissions")
+        raise NoAnnouncement(f"no new submissions for the listing dated {listing_date} "
+                             "(no announcement: an arXiv holiday?); nothing to score")
     log(f"Listing dated {listing_date}: {len(ids)} new submissions; fetching metadata")
     meta = fetch_metadata(ids, required=False)
     if lacking := [i for i in ids if i not in meta]:
@@ -1185,6 +1191,9 @@ def main() -> int:
             write_commit_message(args, date, cfg, via, sorted(scores), len(papers), len(dupes),
                                  sum(len(read_json(m)) for m in meta))
         return 0
+    except NoAnnouncement as e:
+        log(str(e)[0].upper() + str(e)[1:])
+        return 3
     except MapHubError as e:
         log(f"Error: {e}")
         return 1

@@ -37,6 +37,20 @@ import pandas as pd
 df = pd.read_parquet("tables/2024-2026/2610/2026-10-06.parquet")
 ```
 
+## Scoring rubric
+
+Each paper is scored from its title, authors and abstract against a participant's portfolio, by a language model (Claude), on this scale (prompt version v0; the exact prompt is `PROMPTS` in `scorer/daily_table.py`, and `config-log.json` names the version in use). Intermediate values are allowed.
+
+| Score | Meaning |
+| --- | --- |
+| 100 | The subject wrote it, or would write it if it didn't exist |
+| 80 | The subject coauthored it, or would coauthor it if it didn't exist |
+| 60 | The subject has cited it, or probably will at some point |
+| 30 | The subject probably won't cite it, but it may broaden their view |
+| 0 | Worth a glance at the title, but reading the abstract would waste the subject's time |
+
+The portfolio may name people the subject knows and give scoring instructions, followed only for that subject's scores. Scores are AI-generated and can be wrong: they are pointers to papers and people, not judgments of anyone's work.
+
 ## Configuration log
 
 [`config-log.json`](config-log.json) records each change to the scoring setup with the date it takes effect: model, effort, prompt version, input (abstract only or more), listing (new submissions only or extended) and chunk size. Entries apply by the date a table is scored, not the listing it covers. Each commit that adds or changes a table names, in its message, the portfolios commit, the configuration entry and the columns behind it, so `git log -- <table>` gives the table's history. A rescored table replaces the old one, and git keeps the earlier version.
