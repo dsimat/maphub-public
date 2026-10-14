@@ -20,14 +20,19 @@ Steps:
      from the listing that announced them (4 of 345 on Oct 6, 2026) and
      appear in their submission window's listing instead. The papers are saved in the work dir, so a rerun still
      has them.
-  2. Score. One Claude request per participant per chunk of about 50 papers.
-     The instructions and papers come first and are cached across participants.
+  2. Score. Prompt v1 takes two passes: one request per chunk of about 50 papers
+     scores every participant against their outlines (the joint outline: each
+     portfolio's title, Overview, and topics' Next and Expertise lines, cut at run
+     time); then each participant's papers with an outline score of `threshold`
+     or more are scored again against the full portfolio. Prompt v0 makes one
+     request per participant per chunk, with the instructions and papers first,
+     cached across participants.
   3. Write. One Parquet file per ID month, the viewer's index.json and
      empty.json (the dates without an announcement). The
      viewer takes titles and authors from DataCite; for the rare paper whose
      DOI DataCite lacks, a <date>.meta.json beside the Parquet file holds them.
-  4. Resume. Each (participant, chunk) is saved as it arrives; a rerun skips
-     what is already saved. Parquet files are written only once all are done.
+  4. Resume. Each request's scores are saved as they arrive (outline chunks,
+     then each participant's chunks); a rerun skips what is already saved. Parquet files are written only once all are done.
 
 Participants are the folders of the portfolios repo that hold a portfolio.md;
 the folder name is the participant's pseudonym and column name.
@@ -140,7 +145,27 @@ Return only JSON, one object per paper in the order given: {"id": "<arXiv ID>", 
 """,
         "paper": "[{id}] {title}\n{authors}\n{abstract}",
     },
+    # v1: two passes. Every paper is first scored for all participants at once
+    # against their outlines (the joint outline); a participant's papers that
+    # score `threshold` or more there are scored again against the full
+    # portfolio, with v0's wording. The other cells keep their outline scores.
+    "v1": {
+        "outline_head": """\
+You score new arXiv papers for relevance to the subjects of several research portfolios: researchers, groups or collaborations. The papers come first, then the portfolios, each labelled with the subject's pseudonym. The portfolios are short outlines; judge each subject only by their own portfolio, independently of the others.
+
+Score each paper for each subject from its title, authors and abstract on this scale. Intermediate values are allowed.
+   100 = the subject wrote it, or would write it if it didn't exist
+   80 = the subject coauthored it, or would coauthor it if it didn't exist
+   60 = the subject has cited it, or probably will at some point
+   30 = the subject probably won't cite it, but it may broaden their view
+   0 = worth a glance at the title, but reading the abstract would waste the subject's time
+
+Return only JSON, one object per paper in the order given: {"id": "<arXiv ID>", "scores": {"<pseudonym>": <integer 0-100>, ...}}, with every pseudonym for every paper. No explanations.
+
+""",
+    },
 }
+PROMPTS["v1"].update({"head": PROMPTS["v0"]["head"], "paper": PROMPTS["v0"]["paper"]})
 
 
 class MapHubError(Exception):
@@ -525,6 +550,34 @@ def load_participants(folder: Path, legacy: bool = False) -> dict[str, str]:
     return found
 
 
+def outline(portfolio: str) -> str:
+    """A portfolio's outline: its title, its Overview, and each topic's heading with
+    its Next and Expertise lines (PORTFOLIOS.md). It is cut at run time and never stored."""
+    lines = portfolio.splitlines()
+    out = [lines[0].strip()] if lines and lines[0].startswith("# ") else []
+    overview = re.search(r"^## Overview[ \t]*\n(.*?)(?=^## |\Z)", portfolio, re.S | re.M)
+    if overview:
+        out += ["", "## Overview", overview.group(1).strip()]
+    for m in re.finditer(r"^## (.+)$", portfolio, re.M):
+        if m.group(1).strip() == "Overview":
+            continue
+        section = re.split(r"^## ", portfolio[m.end():], maxsplit=1, flags=re.M)[0]
+        out += ["", f"## {m.group(1).strip()}"]
+        out += [x.group(0).strip() for x in re.finditer(r"^(?:Next|Expertise):.*$", section, re.M)]
+    return "\n".join(out)
+
+
+def joint_outline(portfolios: dict[str, str]) -> str:
+    """Every participant's outline, labelled by pseudonym, for the outline pass."""
+    parts = []
+    for who, text in portfolios.items():
+        cut = outline(text)
+        if "Expertise:" not in cut:
+            log(f"Warning: {who}'s portfolio has no Expertise lines; its outline is thin (PORTFOLIOS.md)")
+        parts.append(f'<portfolio subject="{who}">\n{cut}\n</portfolio>')
+    return "\n\n".join(parts) + "\n"
+
+
 def make_chunks(papers: list[dict], size: int) -> list[list[dict]]:
     """Split into the fewest chunks of at most `size` papers, as even as possible."""
     n = len(papers)
@@ -532,7 +585,7 @@ def make_chunks(papers: list[dict], size: int) -> list[list[dict]]:
     return [papers[i * n // k : (i + 1) * n // k] for i in range(k)]
 
 
-def papers_prefix(prompt: dict, chunk: list[dict]) -> str:
+def papers_prefix(prompt: dict, chunk: list[dict], head: str = "head") -> str:
     """The cached part of the request: instructions plus papers, identical for everyone."""
     entries = [
         prompt["paper"].format(
@@ -540,7 +593,7 @@ def papers_prefix(prompt: dict, chunk: list[dict]) -> str:
         )
         for p in chunk
     ]
-    return prompt["head"] + "<papers>\n" + "\n\n".join(entries) + "\n</papers>\n\n"
+    return prompt[head] + "<papers>\n" + "\n\n".join(entries) + "\n</papers>\n\n"
 
 
 def request_params(cfg: dict, prefix: str, portfolio: str) -> dict:
@@ -716,6 +769,108 @@ def score_claude_code(cfg, jobs, prefixes, portfolios, scores_dir) -> None:
                 log("  Stopping: Claude Code keeps failing (perhaps a usage limit); "
                     "rerun later to resume.")
                 return
+
+
+def joint_scores_from_text(text: str, chunk: list[dict], who: list[str]) -> dict[str, dict[str, int]]:
+    """Read {"id", "scores": {pseudonym: score}} objects; every paper needs every pseudonym."""
+    wanted = {p["id"] for p in chunk}
+    scores: dict[str, dict[str, int]] = {}
+    for m in re.finditer(r'\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"scores"\s*:\s*(\{[^{}]*\})\s*\}', text):
+        try:
+            pid, row = bare_id(m.group(1)), json.loads(m.group(2))
+            row = {w: min(100, max(0, round(float(row[w])))) for w in who}
+        except (ValueError, KeyError, TypeError, MapHubError):
+            continue
+        if pid in wanted:
+            scores[pid] = row
+    missing = wanted - scores.keys()
+    if missing:
+        raise PartialScores(f"no complete scores for {len(missing)} of {len(wanted)} papers", scores)
+    return scores
+
+
+def score_outlines(cfg, via, chunks, portfolios, out_dir) -> None:
+    """The outline pass: one request per chunk scores every participant against the
+    joint outline. Saved per chunk as outline/chunk<k>.json; a rerun skips saved chunks."""
+    prompt = PROMPTS[cfg["prompt"]]
+    who = list(portfolios)
+    joint = joint_outline(portfolios)
+    schema = json.dumps({"type": "object", "properties": {"papers": {"type": "array", "items": {
+        "type": "object", "properties": {"id": {"type": "string"}, "scores": {
+            "type": "object", "properties": {w: {"type": "integer"} for w in who}, "required": who}},
+        "required": ["id", "scores"]}}}, "required": ["papers"]})
+    client = anthropic.Anthropic() if via == "api" else None
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    command = ["claude", "-p", "--model", cfg["model"], "--tools", "",
+               "--system-prompt", CLAUDE_CODE_SYSTEM, "--output-format", "json",
+               "--json-schema", schema, "--no-session-persistence", "--setting-sources", ""]
+    if cfg.get("effort"):
+        command += ["--effort", cfg["effort"]]
+    with tempfile.TemporaryDirectory() as empty:
+        for k, chunk in enumerate(chunks):
+            if outline_done(out_dir, k, chunk, who):
+                continue
+            got: dict[str, dict[str, int]] = {}
+            usage, seconds, cost = None, 0.0, 0.0
+            for attempt in range(1, SCORE_ATTEMPTS + 1):
+                todo = [p for p in chunk if p["id"] not in got]
+                text = papers_prefix(prompt, todo, "outline_head") + joint
+                start = time.monotonic()
+                try:
+                    if via == "api":
+                        params = {"model": cfg["model"], "max_tokens": MAX_TOKENS,
+                                  "messages": [{"role": "user", "content": text}]}
+                        if cfg.get("effort"):
+                            params["output_config"] = {"effort": cfg["effort"]}
+                        message = client.messages.create(**params)
+                        usage = add_usage(usage, usage_dict(message))
+                        reply = "".join(b.text for b in message.content if b.type == "text")
+                    else:
+                        run = subprocess.run(command, input=text, capture_output=True, text=True,
+                                             cwd=empty, env=env, timeout=CLAUDE_CODE_TIMEOUT)
+                        out = json.loads(run.stdout) if run.stdout.strip() else {}
+                        if run.returncode != 0 or out.get("is_error") or out.get("subtype") != "success":
+                            raise MapHubError(str(out.get("result") or run.stderr.strip() or
+                                                  f"exit {run.returncode}")[:300])
+                        u = out.get("usage", {})
+                        usage = add_usage(usage, {"input": u.get("input_tokens", 0),
+                                                  "cache_write": u.get("cache_creation_input_tokens", 0),
+                                                  "cache_read": u.get("cache_read_input_tokens", 0),
+                                                  "output": u.get("output_tokens", 0)})
+                        cost += out.get("total_cost_usd") or 0
+                        reply = (json.dumps(out["structured_output"]) if out.get("structured_output")
+                                 else out.get("result", ""))
+                    seconds += time.monotonic() - start
+                    scores = {**got, **joint_scores_from_text(reply, todo, who)}
+                except FileNotFoundError:
+                    raise MapHubError("the claude command was not found; install Claude Code")
+                except PartialScores as e:
+                    got.update(e.scores)
+                    log(f"  outline chunk {k}: attempt {attempt}: {e}; asking again for those")
+                    continue
+                except (MapHubError, anthropic.APIError, json.JSONDecodeError,
+                        subprocess.TimeoutExpired) as e:
+                    log(f"  outline chunk {k}: attempt {attempt} failed: {e}")
+                    continue
+                write_json(out_dir / f"chunk{k}.json",
+                           {"ids": [p["id"] for p in chunk], "participants": who, "scores": scores,
+                            "usage": usage, "seconds": round(seconds, 1), "model": cfg["model"],
+                            "via": via, "api_equivalent_usd": round(cost, 6) if cost else None})
+                log(f"  outline chunk {k + 1}/{len(chunks)}: {len(scores)} papers x {len(who)} "
+                    f"participants, {seconds:.0f} s, tokens in {usage['input']} + cache write "
+                    f"{usage['cache_write']} + cache read {usage['cache_read']}, out {usage['output']}")
+                break
+            else:
+                log("  Stopping: the outline pass keeps failing (perhaps a usage limit); rerun later to resume.")
+                return
+
+
+def outline_done(out_dir: Path, k: int, chunk: list[dict], who: list[str]) -> bool:
+    f = out_dir / f"chunk{k}.json"
+    if not f.exists():
+        return False
+    saved = read_json(f)
+    return saved["ids"] == [p["id"] for p in chunk] and set(saved["participants"]) >= set(who)
 
 
 def score_batch(client, cfg, jobs, prefixes, portfolios, scores_dir, state: Path) -> None:
@@ -1030,20 +1185,20 @@ def publish_roster(tables: Path, portfolios: Path) -> None:
     })
 
 
-def summarize(scores_dir: Path, participants) -> None:
+def summarize(scores_dir: Path) -> None:
+    """Usage of every request saved for the day (both passes, when there are two)."""
     total = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
     seconds = 0.0
     requests = 0
     equivalent = None
-    for who in participants:
-        for f in (scores_dir / who).glob("chunk*.json"):
-            saved = read_json(f)
-            requests += 1
-            for key in total:
-                total[key] += saved["usage"][key]
-            seconds += saved["seconds"] or 0
-            if saved.get("api_equivalent_usd") is not None:
-                equivalent = (equivalent or 0) + saved["api_equivalent_usd"]
+    for f in scores_dir.rglob("chunk*.json"):
+        saved = read_json(f)
+        requests += 1
+        for key in total:
+            total[key] += saved["usage"][key]
+        seconds += saved["seconds"] or 0
+        if saved.get("api_equivalent_usd") is not None:
+            equivalent = (equivalent or 0) + saved["api_equivalent_usd"]
     log(f"Usage: {requests} requests, {seconds:.0f} s of request time; tokens in "
         f"{total['input']} + cache write {total['cache_write']} + cache read "
         f"{total['cache_read']}, out {total['output']}"
@@ -1055,7 +1210,7 @@ def summarize(scores_dir: Path, participants) -> None:
 
 
 def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_meta=0,
-                         note: str | None = None) -> None:
+                         note: str | None = None, promoted: dict[str, int] | None = None) -> None:
     """Write the commit message for the table just written, to .work/commit-message.txt.
 
     The tables carry no provenance themselves; the commit that adds or changes a
@@ -1072,6 +1227,9 @@ def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_m
              f"Columns: {', '.join(columns)}",
              f"Papers: {n_papers}" + (f" ({n_skipped} already scored on another date, left out)"
                                       if n_skipped else "")]
+    if promoted:
+        lines.append(f"Full portfolio (outline score {cfg['threshold']} or more): "
+                     + ", ".join(f"{w} {promoted[w]}" for w in sorted(promoted)))
     if note:
         lines.append(note)
     if n_meta:
@@ -1191,43 +1349,87 @@ def main() -> int:
             portfolios = own_only(portfolios)
         cfg = {**cfg, "cache": len(portfolios) > 1}
         prompt = PROMPTS[cfg["prompt"]]
+        two_pass = "outline_head" in prompt
+        if two_pass and args.batch:
+            raise MapHubError(f"prompt {cfg['prompt']} scores in two passes; --batch is not supported")
         chunks = make_chunks(papers, cfg["chunk_size"])
-        prefixes = [papers_prefix(prompt, c) for c in chunks]
         scores_dir = day_dir / "scores"
         log(f"{date}: {len(papers)} papers in {len(chunks)} chunks, {len(portfolios)} "
             f"participants; {cfg['model']}, effort {cfg.get('effort')}, prompt {cfg['prompt']}; "
-            f"via {via}" + ("" if cfg["cache"] or via != "api" else "; no caching (one participant)"))
+            f"via {via}" + ("" if cfg["cache"] or via != "api" or two_pass else "; no caching (one participant)"))
 
-        def done(who: str, k: int) -> bool:
-            f = scores_dir / who / f"chunk{k}.json"
-            return f.exists() and read_json(f)["ids"] == [p["id"] for p in chunks[k]]
+        def done(folder: Path, who: str, k: int, chunk: list[dict]) -> bool:
+            f = folder / who / f"chunk{k}.json"
+            return f.exists() and read_json(f)["ids"] == [p["id"] for p in chunk]
 
-        # Chunk-major order: every participant reads the cache the first one wrote.
-        jobs = [(who, k, chunk) for k, chunk in enumerate(chunks)
-                for who in portfolios if not done(who, k)]
-        skipped = len(chunks) * len(portfolios) - len(jobs)
-        if skipped:
-            log(f"Resuming: {skipped} requests already saved, {len(jobs)} to go")
-        if jobs and via == "claude-code":
-            score_claude_code(cfg, jobs, prefixes, portfolios, scores_dir)
-        elif jobs:
-            client = anthropic.Anthropic()
-            if args.batch:
-                score_batch(client, cfg, jobs, prefixes, portfolios, scores_dir,
-                            day_dir / "batch.json")
+        def run_jobs(folder: Path, jobs, prefixes, serve: dict, job_cfg: dict) -> None:
+            if not jobs:
+                return
+            if via == "claude-code":
+                score_claude_code(job_cfg, jobs, prefixes, serve, folder)
             else:
-                score_direct(client, cfg, jobs, prefixes, portfolios, scores_dir)
+                client = anthropic.Anthropic()
+                if args.batch:
+                    score_batch(client, job_cfg, jobs, prefixes, serve, folder, day_dir / "batch.json")
+                else:
+                    score_direct(client, job_cfg, jobs, prefixes, serve, folder)
 
-        summarize(scores_dir, portfolios)
-        left = [(who, k) for k in range(len(chunks)) for who in portfolios if not done(who, k)]
-        if left:
-            log(f"Incomplete: {len(left)} requests failed; rerun to resume. No table written.")
-            return 2
-
-        scores = {who: {} for who in portfolios}
-        for who in portfolios:
+        scores: dict[str, dict[str, int]] = {who: {} for who in portfolios}
+        promoted: dict[str, int] = {}
+        if two_pass:
+            # Pass 1: every paper against the joint outline, one request per chunk.
+            outline_dir = scores_dir / "outline"
+            log(f"Outline pass: {len(chunks)} requests, all participants at once")
+            score_outlines(cfg, via, chunks, portfolios, outline_dir)
+            left = [k for k, c in enumerate(chunks) if not outline_done(outline_dir, k, c, list(portfolios))]
+            if left:
+                summarize(scores_dir)
+                log(f"Incomplete: {len(left)} outline requests failed; rerun to resume. No table written.")
+                return 2
+            coarse: dict[str, dict[str, int]] = {}
             for k in range(len(chunks)):
-                scores[who].update(read_json(scores_dir / who / f"chunk{k}.json")["scores"])
+                coarse.update(read_json(outline_dir / f"chunk{k}.json")["scores"])
+            # Pass 2: each participant's papers that scored `threshold` or more, against
+            # the full portfolio. No other participant shares these papers, so no caching.
+            full_dir = scores_dir / "full"
+            threshold = cfg["threshold"]
+            full_chunks = {}
+            for who in portfolios:
+                mine = [p for p in papers if coarse[p["id"]][who] >= threshold]
+                promoted[who] = len(mine)
+                full_chunks[who] = make_chunks(mine, cfg["chunk_size"]) if mine else []
+            log(f"Full pass: outline scores of {threshold} or more, "
+                + ", ".join(f"{w} {n}" for w, n in promoted.items()) + " papers")
+            for who in portfolios:
+                jobs = [(who, k, c) for k, c in enumerate(full_chunks[who]) if not done(full_dir, who, k, c)]
+                run_jobs(full_dir, jobs, [papers_prefix(prompt, c) for c in full_chunks[who]],
+                         {who: portfolios[who]}, {**cfg, "cache": False})
+            summarize(scores_dir)
+            left = [(w, k) for w in portfolios for k, c in enumerate(full_chunks[w]) if not done(full_dir, w, k, c)]
+            if left:
+                log(f"Incomplete: {len(left)} full-portfolio requests failed; rerun to resume. No table written.")
+                return 2
+            for who in portfolios:
+                scores[who] = {pid: row[who] for pid, row in coarse.items()}
+                for k in range(len(full_chunks[who])):
+                    scores[who].update(read_json(full_dir / who / f"chunk{k}.json")["scores"])
+        else:
+            prefixes = [papers_prefix(prompt, c) for c in chunks]
+            # Chunk-major order: every participant reads the cache the first one wrote.
+            jobs = [(who, k, chunk) for k, chunk in enumerate(chunks)
+                    for who in portfolios if not done(scores_dir, who, k, chunk)]
+            skipped = len(chunks) * len(portfolios) - len(jobs)
+            if skipped:
+                log(f"Resuming: {skipped} requests already saved, {len(jobs)} to go")
+            run_jobs(scores_dir, jobs, prefixes, portfolios, cfg)
+            summarize(scores_dir)
+            left = [(who, k) for k, c in enumerate(chunks) for who in portfolios if not done(scores_dir, who, k, c)]
+            if left:
+                log(f"Incomplete: {len(left)} requests failed; rerun to resume. No table written.")
+                return 2
+            for who in portfolios:
+                for k in range(len(chunks)):
+                    scores[who].update(read_json(scores_dir / who / f"chunk{k}.json")["scores"])
         for path in write_tables(tables, date, papers, scores):
             log(f"Wrote {path}")
         meta = write_meta(tables, date, [p["id"] for p in papers],
@@ -1237,7 +1439,7 @@ def main() -> int:
         publish_roster(tables, args.portfolios)
         if not args.test:
             write_commit_message(args, date, cfg, via, sorted(scores), len(papers), len(dupes),
-                                 sum(len(read_json(m)) for m in meta))
+                                 sum(len(read_json(m)) for m in meta), promoted=promoted)
         return 0
     except MapHubError as e:
         log(f"Error: {e}")

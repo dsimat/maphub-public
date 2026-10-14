@@ -9,9 +9,9 @@ The method is general, for any field. The examples come from astronomy, where pa
 The portfolio is built from papers, never from stated interests:
 
 - **Bottom-up from papers.** Topics come from the papers the subject has, starting with their own. No topic is decided in advance.
-- **Interests enter only through reading.** A topic the subject hasn't published on appears only once their reading on it builds up. Interest without reading doesn't count.
+- **Interests enter only through reading; plans are welcome.** A topic the subject hasn't published on appears only once their reading on it builds up. Interest without reading doesn't count. The subject's own plans do belong in the portfolio, in each topic's Next line or as a topic of their own (Basis: plans): MapHub uses portfolios to find papers of interest, and papers on planned work are among them.
 - **The subject's own work, AI-drafted and corrected by the subject.**
-- **Names and instructions.** A portfolio may name people the subject knows and add scoring instructions, within the length; both affect only that participant's column.
+- **Names and instructions.** A portfolio may name people the subject knows and add scoring instructions, within the length; both affect only that participant's column, and only for papers that pass the outline (below).
 - **One paper can sit under several topics.** Those overlaps are often the most thought-provoking.
 - **Versions live in git.** There's no changelog in the file, and each scoring run can be traced to a commit of the portfolios repository.
 
@@ -19,14 +19,16 @@ The portfolio is built from papers, never from stated interests:
 # Research portfolio: <subject>
 
 ## Overview
-<about 100–150 words: the subject's main research thread and current focus>
+<about 100–150 words of prose: the subject's main research thread and current focus>
 
 ## <Topic name>
-Basis: <own papers | reading | both>
+Basis: <own papers | own work | reading | plans, or a combination>
 
 Summary: <about 2–4 sentences: what the subject has done or learned here, and their position>
 
-Expertise: <methods, concepts and data sets the subject commands>
+Next: <one line: the subject's plans in this topic; left out if there are none>
+
+Expertise: <one line of phrases separated by semicolons, about 30–60 words: the methods, concepts, instruments, codes and data sets that name the topic, plans included>
 
 Papers: <arXiv ID, bibcode or DOI, role (first author / coauthor)>, …
 
@@ -34,7 +36,9 @@ Papers: <arXiv ID, bibcode or DOI, role (first author / coauthor)>, …
 …
 ```
 
-The lengths are guides: an Overview or Summary may run longer, with short bullet lists, when the extra detail comes from the papers, as in a group's portfolio that follows a series of papers. A group's portfolio may end with a line defining the marks in its Papers lists (the portfolio-drafting prompt). The whole portfolio runs to about 1,500 words for a person and about 3,000 for a group or collaboration.
+**The outline.** MapHub scores in two passes (DESIGN.md, Daily table). The first pass reads not the whole portfolio but its outline, which a script cuts from it at run time: the title, the Overview, and each topic's heading with its Next and Expertise lines, about 500 words for a person and 700 for a group. Only papers that pass this first look (an outline score of 10 or more) are scored again against the full portfolio. So everything a paper of interest could be about should show in the outline: the Overview names the main threads, and each topic's Expertise and Next lines name its methods, data and plans in the portfolio's own words. A topic without papers, such as a planned direction, still gets a heading, a Basis and these lines.
+
+The lengths are guides. The Summary may run longer, with short bullet lists, when the extra detail comes from the papers, as in a group's portfolio that follows a series of papers; the Overview, Next and Expertise lines are best kept short, since the first pass reads them for every paper. A group's portfolio may end with a line defining the marks in its Papers lists (the portfolio-drafting prompt). The whole portfolio runs to about 1,500 words for a person and about 3,000 for a group or collaboration.
 
 The portfolio must stand on its own: it contains no scores, and everything in it must make sense to a reader with no other context, such as MapHub's scorer.
 
@@ -57,18 +61,20 @@ Write the portfolio in exactly this format:
 # Research portfolio: <subject>
 
 ## Overview
-<100–150 words: the subject's main research thread and current focus>
+<about 100–150 words of prose: the subject's main research thread and current focus>
 
 ## <Topic name>
 Basis: own papers
 
 Summary: <2–4 sentences: what the subject has done here and their position>
 
-Expertise: <methods, concepts and data sets the papers show the subject commands; weigh central papers more than papers where the subject's role was small>
+Next: <one line: the future work the papers state for this topic; leave the line out if there is none>
+
+Expertise: <one line of phrases separated by semicolons, about 30–60 words: methods, concepts and data sets the papers show the subject commands; weigh central papers more than papers where the subject's role was small>
 
 Papers: <arXiv ID, bibcode or DOI, role>, …
 
-Rules: base every statement on the papers or the documents provided, not on guesses; write in plain language that a reader with no other context can follow; make this first draft comprehensive, including every topic the papers support, but write it with an eventual length of about 1,500 words (about 3,000 for a group or collaboration) in mind. The Overview and Summary lengths are guides: go past them, with short bullet lists if that helps, when the detail comes from the papers. Include the limits and future work the papers state. If the draft falls short of the target length, expand from the main papers' introductions and conclusions; never pad. Where the documents and the papers disagree, follow the papers.
+Rules: base every statement on the papers or the documents provided, not on guesses; write in plain language that a reader with no other context can follow; make this first draft comprehensive, including every topic the papers support, but write it with an eventual length of about 1,500 words (about 3,000 for a group or collaboration) in mind. The lengths are guides: the Summary may run longer, with short bullet lists if that helps, when the detail comes from the papers; keep the Overview, Next and Expertise lines short, since MapHub's first pass reads them for every paper. Include the limits the papers state in the Summary and the future work in the Next lines. If the draft falls short of the target length, expand from the main papers' introductions and conclusions; never pad. Where the documents and the papers disagree, follow the papers.
 
 Output only the portfolio, not your working publication list, and then list the papers you could read only at title level.
 

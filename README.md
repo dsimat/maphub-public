@@ -40,7 +40,7 @@ df = pd.read_parquet("tables/2024-2026/2610/2026-10-06.parquet")
 
 ## Scoring rubric
 
-Each paper is scored from its title, authors and abstract against a participant's portfolio, by a language model (Claude), on this scale (prompt version v0; the exact prompt is `PROMPTS` in `scorer/daily_table.py`, and `config-log.json` names the version in use). Intermediate values are allowed.
+Each paper is scored from its title, authors and abstract against a participant's portfolio, by a language model (Claude), on this scale (prompt version v1; the exact prompts are `PROMPTS` in `scorer/daily_table.py`, and `config-log.json` names the version in use). Intermediate values are allowed. Since Oct 15, 2026, scoring takes two passes: every paper is first scored for all participants at once against outlines of their portfolios, and the papers that score 10 or more for a participant there are scored again against that participant's full portfolio; the other scores come from the first pass (DESIGN.md, Daily table).
 
 | Score | Meaning |
 | --- | --- |
@@ -50,7 +50,7 @@ Each paper is scored from its title, authors and abstract against a participant'
 | 30 | The subject probably won't cite it, but it may broaden their view |
 | 0 | Worth a glance at the title, but reading the abstract would waste the subject's time |
 
-The anchors guide the model; they are not calibrated probabilities. Most papers score low for most participants: in the tables from Sep 9 to Oct 12, 2026, 97% of the scores are below 30, and 0.3% are 60 or above. The portfolio may name people the subject knows and give scoring instructions, followed only for that subject's scores. Scores are AI-generated and can be wrong: they are pointers to papers and people, not judgments of anyone's work.
+The anchors guide the model; they are not calibrated probabilities. Most papers score low for most participants: in the tables from Sep 9 to Oct 12, 2026, 97% of the scores are below 30, and 0.3% are 60 or above. The portfolio may name people the subject knows and give scoring instructions, followed only for that subject's scores (in the second pass). Scores are AI-generated and can be wrong: they are pointers to papers and people, not judgments of anyone's work.
 
 ## Terms
 
@@ -68,7 +68,7 @@ The anchors guide the model; they are not calibrated probabilities. Most papers 
 
 ## Configuration log
 
-[`config-log.json`](config-log.json) records each change to the scoring setup with the date it takes effect: model, effort, prompt version, input (abstract only or more), listing (new submissions only or extended), the arXiv listings followed (`listings`: astro-ph and cs.AI here) with the categories queried for past listings (`categories`), and chunk size. Entries apply by the date a table is scored, not the listing it covers. Each commit that adds or changes a table names, in its message, the portfolios commit, the configuration entry and the columns behind it, so `git log -- <table>` gives the table's history. A rescored table replaces the old one, and git keeps the earlier version.
+[`config-log.json`](config-log.json) records each change to the scoring setup with the date it takes effect: model, effort, prompt version, input (abstract only or more), listing (new submissions only or extended), the arXiv listings followed (`listings`: astro-ph and cs.AI here) with the categories queried for past listings (`categories`), chunk size and the two-pass threshold. Entries apply by the date a table is scored, not the listing it covers. Each commit that adds or changes a table names, in its message, the portfolios commit, the configuration entry and the columns behind it, so `git log -- <table>` gives the table's history. A rescored table replaces the old one, and git keeps the earlier version.
 
 ## Repository layout
 
@@ -112,7 +112,7 @@ MapHub is meant to be copied: a high-energy physics department, say, can run one
    - `listings`: the listings as arXiv's RSS feeds name them, such as `["hep-ph", "hep-th"]`.
    - `categories`: the arXiv API categories that past listings are rebuilt from, one query each. Leave it out when every listing is a single category; an archive split into subcategories, like astro-ph or cond-mat, needs each one listed (see this repository's entry).
    - `effective`: on or before the day of your first run, even a test; entries take effect by the run date.
-   - `model`, `effort` and `prompt`: the Claude model and effort level, and the prompt version (`v0`, in `scorer/daily_table.py`). `fallbacks` applies only to the API route. Replace `note`.
+   - `model`, `effort` and `prompt`: the Claude model and effort level, and the prompt version (`v1`, two passes, or `v0`, one; in `scorer/daily_table.py`), with `threshold` for v1. `fallbacks` applies only to the API route. Replace `note`.
 3. **Create a private portfolios repository** and clone it inside your copy as `maphub-portfolios/` (`.gitignore` leaves it out). It holds one folder per participant, named by a pseudonym and holding `portfolio.md` ([PORTFOLIOS.md](PORTFOLIOS.md): the format, and the portfolio-drafting prompt), and `participants.json`:
    ```json
    {"participants": {
