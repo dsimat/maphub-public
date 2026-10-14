@@ -22,7 +22,8 @@ Steps:
      has them.
   2. Score. One Claude request per participant per chunk of about 50 papers.
      The instructions and papers come first and are cached across participants.
-  3. Write. One Parquet file per ID month and the viewer's index.json. The
+  3. Write. One Parquet file per ID month, the viewer's index.json and
+     empty.json (the dates without an announcement). The
      viewer takes titles and authors from DataCite; for the rare paper whose
      DOI DataCite lacks, a <date>.meta.json beside the Parquet file holds them.
   4. Resume. Each (participant, chunk) is saved as it arrives; a rerun skips
@@ -903,6 +904,7 @@ def write_tables(tables: Path, date: dt.date, papers, scores: dict[str, dict[str
         os.replace(tmp, path)
         written.append(path)
     write_index(tables, date, sorted(by_month))
+    write_empty_list(tables)
     return written
 
 
@@ -1002,7 +1004,19 @@ def write_empty_table(tables: Path, date: dt.date, columns: list[str]) -> Path:
     empty = {"id": pa.array([], pa.string()), **{w: pa.array([], pa.uint8()) for w in columns}}
     pq.write_table(pa.table(empty), path)
     write_index(tables, date, [yymm])
+    write_empty_list(tables)
     return path
+
+
+def write_empty_list(tables: Path) -> None:
+    """empty.json: the listing dates whose tables hold no paper, rebuilt from the tables.
+    Such a date had no announcement (a holiday), met by the morning run or filled in
+    by a backfill; the viewer's calendar marks it."""
+    rows: dict[str, int] = {}
+    for f in tables.glob("*/*/*.parquet"):
+        rows[f.stem] = rows.get(f.stem, 0) + pq.read_metadata(f).num_rows
+    empty = sorted(day for day, n in rows.items() if n == 0)
+    (tables / "empty.json").write_text(json.dumps(empty) + "\n", encoding="utf-8")
 
 
 def publish_roster(tables: Path, portfolios: Path) -> None:

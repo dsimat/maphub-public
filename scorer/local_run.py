@@ -69,6 +69,7 @@ def rebuild_index() -> None:
         dates.setdefault(dt.date.fromisoformat(f.stem), []).append(f.parent.name)
     for date, yymms in sorted(dates.items()):
         dtab.write_index(TABLES, date, sorted(yymms))
+    dtab.write_empty_list(TABLES)
 
 
 def sync() -> None:
@@ -82,11 +83,11 @@ def sync() -> None:
         raise RunError(f"git pull: {pulled.stderr.strip()}")
     while rebasing():
         conflicts = git(ROOT, "diff", "--name-only", "--diff-filter=U").split()
-        if conflicts != ["tables/index.json"]:
+        if not conflicts or not set(conflicts) <= {"tables/index.json", "tables/empty.json"}:
             git(ROOT, "rebase", "--abort", check=False)
             raise RunError(f"pull conflicts in {', '.join(conflicts) or 'unknown files'}; resolve by hand")
         rebuild_index()
-        git(ROOT, "add", "tables/index.json")
+        git(ROOT, "add", "tables/index.json", "tables/empty.json")
         git(ROOT, "rebase", "--continue", env={"GIT_EDITOR": "true"}, check=False)
 
 

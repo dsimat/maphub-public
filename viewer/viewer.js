@@ -47,6 +47,8 @@ let roster = { active: null, hidden: [] };
 const isActive = (who) => !roster.active || roster.active.includes(who);
 // From config-log.json: the arXiv listings each configuration follows ("astro-ph", "cs.AI").
 let configs = [];
+// From empty.json: listing dates whose table holds no paper (no announcement, a holiday).
+let noAnnouncement = new Set();
 function listingsOn(date) {
   const entry = configs.filter((c) => c.effective <= date).at(-1) ?? configs[0];
   const names = entry?.listings ?? [];
@@ -501,8 +503,9 @@ function wireDates(dates, current) {
   }
 }
 
-// The calendar shows one month: days with a table are buttons, other days plain
-// text (muted on weekdays, faint on weekends); the shown day is outlined.
+// The calendar shows one month: days with a table are buttons (sand-colored when the
+// listing had no announcement), other days plain text (muted on weekdays, faint on
+// weekends); the shown day is outlined.
 function wireCalendar(dates, current, go) {
   const box = $("calendar"), button = $("cal");
   const have = new Set(dates);
@@ -529,12 +532,14 @@ function wireCalendar(dates, current, go) {
       const iso = `${shown}-${String(dd).padStart(2, "0")}`;
       const weekend = [0, 6].includes(new Date(`${iso}T12:00:00Z`).getUTCDay());
       const cls = "cal-day" + (weekend ? " weekend" : "") + (iso === current ? " current" : "");
+      const none = noAnnouncement.has(iso);
       grid.append(have.has(iso)
-        ? el("button", { type: "button", class: cls + " has", title: `Table for ${iso}`, onclick: () => go(iso) }, String(dd))
+        ? el("button", { type: "button", class: cls + " has" + (none ? " none" : ""),
+            title: none ? `${iso}: no announcement (a holiday)` : `Table for ${iso}`, onclick: () => go(iso) }, String(dd))
         : el("span", { class: cls, title: weekend ? "Weekend: no listing" : "No table" }, String(dd)));
     }
     box.replaceChildren(el("div", { class: "cal-head" }, back, el("span", {}, title), fwd), grid,
-      el("div", { class: "cal-legend" }, "Highlighted days have a table."));
+      el("div", { class: "cal-legend" }, "Highlighted days have a table; sand-colored days had no announcement (a holiday)."));
   };
   const open = (yes) => {
     box.hidden = !yes;
@@ -770,6 +775,7 @@ async function main() {
     // No index means no table has been written yet.
     files = tableFiles(await getOptionalJSON(TABLES + "index.json", {}));
     people = await getOptionalJSON(TABLES + "participants.json", null);
+    noAnnouncement = new Set(await getOptionalJSON(TABLES + "empty.json", []));
     configs = (await getOptionalJSON(BASE + "config-log.json", []))
       .sort((a, b) => a.effective.localeCompare(b.effective));
   } catch (e) {
@@ -782,7 +788,8 @@ async function main() {
     if (!dates.length) return fail("No tables yet. The first one appears after the first daily run.");
     return mainTop(files, dates);
   }
-  const date = requested ?? dates.at(-1);
+  // The base URL opens on the latest day with an announcement, not on a holiday.
+  const date = requested ?? [...dates].reverse().find((d) => !noAnnouncement.has(d)) ?? dates.at(-1);
   wireDates(dates, date);
   if (!date) return fail("No tables yet. The first one appears after the first daily run.");
   document.title = `MapHub ${date}`;
