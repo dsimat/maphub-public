@@ -1,0 +1,117 @@
+# Developing MapHub
+
+How MapHub works and why it works that way, with the tests behind its choices, its versions and where it is going, for anyone who develops MapHub or builds one for other arXiv listings. [RUNNING.md](RUNNING.md) says how a MapHub is set up and run, and [RESULTS.md](RESULTS.md) what it produces; the [README](README.md) introduces MapHub and gives the portfolio format and the scoring rubric. The method does not depend on the field; the measurements and dates here come from the prototype (this repository: astro-ph and cs.AI, five participants), and their numbers carry over as orders of magnitude, scaled by the size of the listings and the number of participants. Dates record when something was measured or decided.
+
+## Overview
+
+The name works two ways: it is short for MIDAS arXiv Preprint Hub, and its deliverables are daily heatmaps (copies outside MIDAS may take other names; README, Run your own MapHub). Each morning a participant sees the new papers ranked by relevance to them, then finds who among the participants could answer questions about the papers they care about. Because scoring is centralized, no participant has to go through the new submissions on their own.
+
+- **One heatmap per announcement day.** Weekends have no listing, so they have no heatmap; an arXiv holiday has no announcement: met by the morning run, it gets an empty table, which the viewer shows as a day without an announcement; reached by a backfill, it gets a table of the submissions it would have held (RESULTS.md, Back catalogs).
+- **Rows:** that day's new submissions to the configured listings. The minimal version leaves out cross-lists and replacements.
+- **Columns:** participants, both individuals and groups.
+- **Cells:** each paper's relevance to each participant, scored from that participant's portfolio on a 0–100 scale (README, Scoring rubric).
+
+New listings are scored each morning by the maintainer, through Claude Code (RUNNING.md, Local runs), and backfills go back a day at a time. The maintainer also handles the human side by hand: reviewing portfolio changes, helping new participants, answering questions. Publishing the viewer runs on its own.
+
+**Listings.** The prototype follows astro-ph and cs.AI because it is centered on an astronomer at an AI institute: a bridge between colleagues from many disciplines, who all work on AI, and the astronomy community, especially where they share methods such as remote sensing, data analysis and theoretical modeling. The listings are a setting in the configuration log (`listings` and `categories`), so a MapHub for other fields changes them there; the rest of what is the prototype's own (the page's wording and colors, the user agent, the operations file's examples) is listed in RUNNING.md, Setting up a copy, step 4.
+
+## Daily table
+
+The script `scorer/daily_table.py` takes an announcement date (by default the current listing) and produces that day's table.
+
+1. **Fetch.** The arXiv API cannot be queried by announcement date, so the day's new submissions come from arXiv's RSS feed for the configured listings (astro-ph and cs.AI in the prototype), which shows only the current listing and marks each paper's announce type (keeping "new" leaves out cross-lists and replacements). Titles, authors and abstracts then come from the API in one query; the minimal version uses nothing more. The papers are saved locally, so a rerun on a later day still has them.
+2. **Score.** Two passes (prompt v1, in the prototype since Oct 15, 2026; Two-pass test). The outline pass sends one Claude request per chunk of about 50 papers: the outline prompt (Prompts), the chunk's papers, and every participant's outline (the joint outline), and gets back a score for each paper and participant. The full pass then takes, for each participant, the papers whose outline score is 10 or more (the `threshold` in the configuration log) and scores them again with the scoring prompt and that participant's full portfolio, in chunks of about 50; the other cells keep their outline scores. Under prompt v0 (in the prototype until Oct 14, 2026), every paper went through the full pass: one request per participant per chunk, which repeats the short abstracts rather than the long portfolios, roughly 7× fewer input tokens than one request per paper. On the API route, the papers block is then identical across participants, so it is cached; with a single participant the script skips caching, since writing the cache costs 25% extra and pays off only when others read it. Requests through Claude Code, the default, barely share that cache (Oct 2, 2026: 791k tokens written, 78k read); the outline pass sidesteps this by sending each chunk's papers once for everyone.
+3. **Write.** The scores become one Parquet file per arXiv ID month (RESULTS.md, Table format), and `tables/index.json` gains the date so the viewer can find it. The scorer then asks DataCite whether it has every paper's DOI, and saves the metadata of any it lacks beside the table (RESULTS.md, Web viewer). Papers already in another date's table are left out first, so each paper is scored once and only once; a run that writes tables also requires the portfolios to be committed and pushed.
+4. **Resume.** If a run is interrupted, it continues where it stopped: each request's scores are saved as they arrive (the outline chunks, then each participant's full-pass chunks), a rerun skips what is saved, and the Parquet files are written only once the table is complete. A reply that skips a few papers keeps the scores it has, and the retry asks only for the skipped ones (Sep 29, 2026: one chunk lost a paper three times running and stopped the run, before this fix).
+
+**Two ways to send requests** (`--via`). `claude-code`, the default, uses Claude Code's print mode (`claude -p`) on the seat `claude` is signed in to, with tools and settings off and any API key withheld; it scores only the columns listed in `MAPHUB_OWN_PARTICIPANTS`, which `local_run.py` sets to every participant scored daily (status active or no-legacy); on a past date the scorer then keeps those with status active. `api` uses the Claude API with a key from the environment (`.env`); the prototype has kept no key since Oct 10, 2026, and the route can return when needed. On the API route the script sends requests one at a time, in chunk-major order, so that under prompt v0 every participant reads the cache the first one wrote (20 requests, five participants and four chunks, took about 2 minutes on Oct 5, 2026); the Message Batches API costs half price, but caching inside a batch is best-effort, so one-at-a-time requests with cache hits cost less. `--batch` keeps that option for tests, with prompt v0 only. Writing a column into an existing table keeps the other participants' columns, and a run whose paper list differs from the table's is refused.
+
+How runs are started and recorded (kinds of run, local runs, the configuration log) is in RUNNING.md, Runs.
+
+## Prompts
+
+Two prompts, adapted from the reading prompts of Kaili Cao's own literature workflow and written for any subject, person or group. Both give the scale of the README's Scoring rubric and ask for JSON only, with no explanations. The instructions and papers come first, so that this prefix is identical, and cached, across participants; the portfolio or outlines follow.
+
+- **Scoring prompt** (the full pass, and every request under prompt v0): one participant's full portfolio. The portfolio may name people the subject knows and give scoring instructions, which the prompt follows only for that subject's scores.
+- **Outline prompt** (the outline pass, prompt v1): every participant's outline, each labelled with their pseudonym, with a score for each paper and pseudonym; the model is told to judge each subject only by their own outline.
+
+The exact wording is `PROMPTS` in [`scorer/daily_table.py`](scorer/daily_table.py), kept by version so that earlier tables can be traced.
+
+## Measurements
+
+The tests behind MapHub's choices, which matter most to anyone tuning a MapHub of their own or choosing another model. These tests were made on the prototype's listings and participants, in astronomy and AI. They are early impressions from small samples (10 papers in the first test, one 171-paper day in the full-day check, five participants), not benchmarks. A new MapHub, or a new model, is best tested by hand first, the same way.
+
+**First test (Oct 6, 2026).** One individual's portfolio (1,496 words, about 4,100 tokens; arXiv IDs and numbers take many tokens) against 5 astro-ph and 5 cs.AI papers: about 570 tokens per paper, 2–3 s per request, and about $0.05 on Opus 5.5. The same 10 papers on three models:
+
+| Paper | Opus 5.5 | Sonnet 5.5 | Haiku 4.5 |
+| --- | --- | --- | --- |
+| Asymmetric beam treatment for CMB maps | 35 | 22 | 30 |
+| Training numerical intelligence (LLMs) | 15 | 6 | 60 |
+| Galaxy environments with manifold learning | 12 | 8 | 30 |
+| Lensed clumps at z = 1–4 | 10 | 6 | 30 |
+| The other six | 1–3 | 1–3 | 0 or 30 |
+
+Sonnet 5.5 kept Opus's order at half the price. Haiku 4.5 mostly used the anchor values and put an LLM paper first, so it is ruled out.
+
+**Full-day check (Oct 5–6, 2026).** All 171 papers of the Oct 5 listing, scored for all five participants on both models: Sonnet 5.5 ranked them much like Opus 5.5 (rank correlation 0.89–0.96 per column, 3–5 of each top five shared) but compressed the top of the scale (an individual's best paper: Opus 45, Sonnet 22) and missed cross-topic matches that MapHub is meant to find (benchmark stars for a stellar-modeling collaboration: 62 against 22; a CMB beam-treatment paper for a weak-lensing team: 30 against 0). For a paper listed in a participant's own portfolio (2610.03882), Opus gave 95 and Sonnet 72 at low effort and 55 at medium; medium effort added no thinking, and the two Sonnet runs differed only by chance. Decision: Opus 5.5 at low effort. If cost ever forces a cheaper model, a prompt that pins papers listed in a portfolio near 100 is the first thing to try.
+
+**Two-pass test (Oct 14, 2026).** Most cells score low: on the Oct 14 listing, 97% of cells were below 30, and 90% of papers were below 30 for every participant. Scoring those precisely is wasted usage, so a cheap first pass picks out the papers worth a full read. Measured on the Oct 14 and Sep 8 listings (748 papers, five participants, scored with v0 the same day), with costs in API-equivalent dollars through Claude Code:
+
+- **Each participant's outline in their own request** saves little. The papers are about 80% of a request (about 32,000 tokens per 50 papers, against 4,000–8,000 for a full portfolio), so such a first pass costs about 85% of a full run, and the whole two-pass run 89–108%.
+- **All outlines in one request** (the joint outline) sends the papers once: the outline pass cost about $5.4 against about $24 for the v0 run. With a full pass for outline scores of 10 or more (13% of cells), the run comes to about 36% of v0, and it missed 2 of the 137 cells that v0 scored 30 or more (both scored 30, with outline score 5) and none of the 56 at 40 or more. A threshold of 5 missed nothing at about 46%; one of 15 missed 6 cells at about 31%. Outline scores come in steps of 5 and run about half as high as full scores, so they serve only as a filter.
+- **The Overview matters.** Outlines made only of headings, bold phrases and Expertise lines missed 20 of one participant's 52 cells at 30 or more, papers on a field whose interest was written only in the Overview.
+- **The outline's form matters little.** On a stratified subset of 150 papers, outlines of headings with each topic's opening sentence, its Expertise line, or both (with the Overview, about 1,700–2,900 words for five participants) missed 0–2 of 101 cells at 30 or more and cost 33–38% of v0, the same within noise. The format keeps the Expertise line, which portfolios already had, and adds a Next line so that plans show in the outline.
+- **End to end** (50 papers from the subset, with the portfolios in the new format): the outline pass missed none of the 28 cells v0 scored 30 or more, and the full pass came within 10 points of v0 for 95% of the 58 cells it rescored (mean −2.5 points).
+- **v0 and v1 on the same day** (Oct 15, 2026): a backfill of the Sep 1 listing begun with v0 and finished with v1 left both sets of scores for 94 papers (423 cells), with the same portfolios. v1 missed none of the 6 cells v0 scored 30 or more (all had outline scores of 10 or more); the 398 cells left with outline scores had v0 scores of at most 20 (one at 20); and the full pass came within 10 points of v0 on all 25 cells it rescored (72% within 5, mean +2.6). Near 30, scores moved both ways (9 cells at 30 or more with v1, 6 with v0). Since the two comparisons shift in opposite directions (−2.5 and +2.6), the full pass, which sees only the papers that passed the outline, scores like a v0 run within run-to-run noise.
+
+Decision: two passes with the joint outline and a threshold of 10 (prompt v1). The first v1 runs (Oct 15, 2026) came to 36–45% of v0's usage, with 4–15% of a group's cells and 25–32% of one individual's promoted to the full pass.
+
+**Budget.** Measured on Opus 5.5 at low effort for five participants with prompt v0: about $1.50 for the 171 papers of Oct 5 (about $1.60 with retries) and about $2.50 for the 345 of Oct 6, on the API with caching; Tuesday listings include the weekend and run larger. Each further participant adds about 30% of the first one's cost, since only the first writes the cached papers block (about $0.17 against $0.05 per chunk of about 43 papers); ten participants on a typical day of about 200 papers come to roughly $2.90 a day, or about $60 a month over 21 announcement days. Portfolios, re-sent with every chunk, are a large share; chunks of 100 papers would cut it if scoring holds up on longer lists. Sonnet 5.5 would cost about half (Full-day check). With two passes (prompt v1), the Oct 14 and Sep 8 listings came to about a third of v0's cost (Two-pass test): the outline pass sends each chunk's papers once for all participants, so a further participant adds mainly their outline (about 700–1,000 tokens per request) and the full pass over roughly a tenth of the papers. API use is billed separately from Claude subscriptions; the prototype ran on the API until Oct 8, 2026 and on a Claude Code seat since (RUNNING.md, Local runs), so these figures matter for anyone running a MapHub through the API.
+
+## Extension plans
+
+After the minimal version works:
+
+- **Cross-lists.** Add papers from other categories that are cross-listed to the configured listings.
+- **Replacements.** Add revised versions of earlier papers, perhaps only when the abstract has changed.
+- **More text.** Score from more than the title and abstract, such as the introduction and conclusions.
+- **Participants' own repos.** An advanced option for anyone who needs a private portfolio: a participant keeps their portfolio in their own repo, likely through a small GitHub App they install so the daily job can read it there.
+- **Other providers.** The scorer calls only Claude (Claude Code or the API); another model provider would need its own request function (`--via`).
+- **A check of portfolio changes.** A GitHub bot that checks pull requests to the portfolios (own folder only, length), instead of the maintainer's review alone.
+- **Missing participants in the viewer.** Some participants have no column on a given day: they joined later, or chose status no-legacy. For them, the daily job would keep a long-term correlation table between participants, built from every day on which both have scores. A user could still select a missing participant: other participants would then be sorted by long-term correlation with them, and papers by a weighted sum of the present participants' scores, marked as an estimate. To start, each present participant's weight would be their long-term correlation with the missing one, positive correlations only; weights fitted by regression are a later option. The viewer would then read one day's table plus the correlation table.
+- **Viewer.** Column headers that stay in view while scrolling, LaTeX in titles shown as math (e.g. `$z=1-4$`), and a more compact row layout for large listings.
+
+## Open questions
+
+- [ ] Validation: score quality has been checked only by comparing models and prompt versions with each other, and against papers a participant's own portfolio lists; it has not yet been checked against participants' own judgments, for example by participants rating a day's papers blind.
+- [ ] Two passes: whether the threshold of 10 holds up over more days and more participants, especially for participants whose cells are rarely promoted.
+- [ ] Chunk size: whether scoring holds up with 100 papers per request instead of 50, which would cut the usage of both passes further.
+- [ ] Legacy survey: arXiv's submission deadlines before 2026, and how complete the API's date search is before 2007.
+- [ ] Legacy survey: how fast a seat's usage limit lets a year of listings go with two passes (with prompt v0, on Oct 12, 2026, four and a half backfill days filled one 5-hour window of a seat).
+
+## Versions
+
+MapHub's versions are git tags, each on the last commit of its version, so a copy can say which version it started from. Versions 0.1–0.7 were tagged afterwards, on Oct 15, 2026, from the development history; each tag's message gives its name and repeats its line below.
+
+| Version | Name | Dates (2026) | What it brought |
+| --- | --- | --- | --- |
+| `v0.1` | Scorer and viewer | Oct 5 | The scorer and the heatmap viewer; titles and authors from DataCite; publishing on GitHub Pages |
+| `v0.2` | Daily scoring | Oct 6–8 | Daily scoring by a scheduled API workflow; the Claude Code route; past listings and old-style IDs; participant statuses and hidden columns; each paper scored once; provenance in commit messages; the metadata fallback |
+| `v0.3` | Local runs | Oct 8 | Local runs on a Claude Code seat, retiring the API workflow; papers ranked by average score; the viewer's own calendar; replies that skip papers kept and completed |
+| `v0.4` | Host computer | Oct 10–11 | The host computer and `CLAUDE.md`; the `mh` options; backfills that finish unfinished days first; the no-legacy status; the icon |
+| `v0.5` | Top papers | Oct 12 | Top papers, with other participants beside |
+| `v0.6` | Run your own | Oct 13 | Listings as a setting; holidays; Run your own MapHub; the MIT License |
+| `v0.7` | Two passes | Oct 14–15 | Two-pass scoring with the joint outline (prompt v1); portfolios in the standard format; short fold subjects |
+| `v0.8` | Ready for copies | Oct 15 | The README for first readers, the design and operations notes written for any MapHub, portfolios as their own repository or a folder, `portfolios-template/`, versions |
+
+## Sources
+
+- [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions): standard GitHub-hosted runners, which publish the viewer, are free for public repositories.
+- [Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows): schedules use UTC and may start late under load, which retired the scheduled scoring.
+- [arXiv API terms of use](https://info.arxiv.org/help/api/tou.html): at most one request every 3 seconds, over a single connection.
+- [arXiv availability](https://info.arxiv.org/help/availability.html): submissions received by 14:00 ET are announced at 20:00 ET the same day; Friday-to-Monday submissions are announced Monday evening.
+- [arXiv RSS feeds](https://info.arxiv.org/help/rss.html): the current listing, with each paper's announce type (new, cross-list, replacement).
+- [DataCite REST API](https://support.datacite.org/docs/api): metadata of registered DOIs, including arXiv's, readable from a browser.
+- [arXiv on Wikipedia](https://en.wikipedia.org/wiki/ArXiv): arXiv began on August 14, 1991.
+- [Claude Message Batches API](https://platform.claude.com/docs/en/build-with-claude/batch-processing): half-price requests, usually done within an hour (24 hours at most), and the discount stacks with prompt caching.
+- [Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching): cached input is read at a fraction of the base price; writing the cache costs 25% extra.

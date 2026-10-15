@@ -8,7 +8,7 @@ Every MapHub works the same way. Its code, daily tables and viewer are public, a
 
 **This repository is the prototype.** It follows astrophysics (astro-ph) and artificial intelligence (cs.AI), since it is centered on an astronomer at an AI institute, and is run by [Kaili Cao](https://kailicao.github.io/), its maintainer. Its daily scoring began with the listing of Oct 7, 2026, for five participants, and it is under development; the viewer shows its current participants (the columns) and the days scored so far (the calendar). MapHub, and this prototype, were developed as a team project (a "carpentry") of the [Eric and Wendy Schmidt AI in Science Postdoctoral Fellowship](https://midas.umich.edu/training/postdoctoral-programs/schmidt-ai-in-science-postdoctoral-fellowship/) at the Michigan Institute for Data and AI in Society (MIDAS), led by Kaili Cao with teammates Kyle Heyblom, Eva Albalghiti and Dimitrios Simatos; it grew out of Kaili Cao's own literature workflow and extends it from one person to a community. To join the prototype, read What participants agree to (below) and email kailicao@umich.edu.
 
-This README is for first readers: how to run a MapHub of your own, what participants agree to, how to write a portfolio and how to read the results. The details follow below a marked line, and [DESIGN.md](DESIGN.md) explains how MapHub works and why.
+This README is for first readers: how to run a MapHub of your own, what participants agree to, how to write a portfolio and how to read the results. The portfolio-drafting prompt and the repository's layout follow below a marked line, and three documents go deeper: [RUNNING.md](RUNNING.md) (setting up and running a MapHub), [RESULTS.md](RESULTS.md) (the tables, the back catalogs and the viewer) and [DEVELOPMENT.md](DEVELOPMENT.md) (how MapHub works and why, and where it is going).
 
 ## Run your own MapHub
 
@@ -16,32 +16,15 @@ MapHub is meant to be copied: a high-energy physics department, say, can run one
 
 **The name.** MapHub, the MIDAS arXiv Preprint Hub, names the prototype and the copies run within MIDAS, for example by members of the carpentry team for their own disciplines. A copy elsewhere may take whatever name suits it; we would appreciate a note of where it comes from, such as a line in its README and on its page linking to this repository.
 
-1. **Make your copy.** To start with a clean history, create a new repository and copy these files into it; a fork carries the prototype's tables and history, and GitHub leaves a fork's workflows off until you enable them on its Actions tab. Delete `tables/`, which the first run recreates, and note which version you started from (DESIGN.md, Versions).
-2. **Choose the listings** in `config-log.json`. Keep one entry and edit it:
-   - `listings`: the listings as arXiv's RSS feeds name them, such as `["hep-ph", "hep-th"]`.
-   - `categories`: the arXiv API categories that past listings are rebuilt from, one query each. Leave it out when every listing is a single category; an archive split into subcategories, like astro-ph or cond-mat, needs each one listed (see the prototype's entry).
-   - `effective`: on or before the day of your first run, even a test; entries take effect by the run date.
-   - `model`, `effort`, `prompt` and `threshold`: the Claude model and effort level, the prompt version (`v1`, two passes, or `v0`, one; in `scorer/daily_table.py`) and, for v1, the outline score from which a paper is scored again against the full portfolio. `fallbacks` applies only to the API route. Replace `note`.
-3. **Set up the portfolios** as `maphub-portfolios/` inside your copy, starting from `portfolios-template/`: one folder per participant, named by a pseudonym and holding `portfolio.md` (Writing a portfolio, below), and `participants.json`:
-   ```json
-   {"participants": {
-     "1234": {"kind": "individual", "status": "active", "hidden": false, "since": "2027-01-04"},
-     "5678": {"kind": "group", "status": "no-legacy", "hidden": false, "since": "2027-01-04"}}}
-   ```
-   - **Where they live.** Usually in a private repository of their own, cloned inside your copy (`.gitignore` leaves it out), so that participants can read the portfolios while the rest of your copy is public. They can instead be a folder of your copy itself (remove the `maphub-portfolios/` line from `.gitignore`), but then they are exactly as visible as your copy: public, if your copy is public, as GitHub Pages on a free plan requires. Choose this only if your participants agree to public portfolios.
-   - `status`: `active` is scored on each new listing and on backfills of past listings; `no-legacy`, new listings only; `paused` or `left`, not scored. `hidden: true` hides the column in the viewer without stopping its scoring. `kind` (individual, group or collaboration) and `since` (the date of the entry's latest change) are for your records, as is a dated log of changes beside the file, if you keep one (the prototype keeps `CHANGELOG.md`).
-   - Pseudonyms are letters, digits, `_` or `-`, up to 40 characters; the prototype uses random numbers. Keep who stands behind each one where only participants can read it.
-   - Commit and push every portfolio change before a run: the scorer refuses portfolios with uncommitted or unpushed changes, and the daily routine pulls them first.
-   - How you keep the portfolios, and how participants propose changes, is up to you; what the prototype does (DESIGN.md, Participants and portfolios) is a suggestion from its experience.
-4. **Make the page yours:**
-   - `viewer/index.html`: the title and description (lines 6–7), the full name in the header, the About panel (credits, contact, the GitHub link) and the footer's contact link; please keep the footer's "Built with MapHub" link, which notes the origin;
-   - `viewer/viewer.css`: the colors at the top (the prototype's are Michigan Blue and Maize); `viewer/viewer.js`: the heatmap's color ramps, near the top;
-   - the icons `viewer/favicon.svg`, `favicon-32.png` and `apple-touch-icon.png`;
-   - this README, and `CLAUDE.md`, the operations file for an AI assistant, written so that it serves any MapHub, with the prototype's values as examples; replace those with yours;
-   - `MAPHUB_USER_AGENT` in `.env`: how your MapHub names itself to arXiv and DataCite, with a contact, such as `MapHub/0.1 (+https://github.com/<you>/<repo>; you@example.edu)`.
-5. **Publish:** in your repository's Settings > Pages, set the source to GitHub Actions; each push of tables then deploys the viewer at your Pages address.
-6. **Run it** each morning after arXiv's 20:00 ET announcement, with `python scorer/local_run.py -l` (Running locally, below), from one host computer. It needs either Claude Code (`claude` on the search path, recent enough for `--json-schema`), signed in to a Claude subscription whose terms allow this use (check them), whose usage limits then pace the runs; or the Claude API, with `ANTHROPIC_API_KEY=...` in `.env` and `--via api`. For scale, the prototype runs on a Standard seat of a Claude Team plan (which includes Claude Code, with 1.25 times the Pro plan's usage per session and a weekly limit, as of October 2026): an ordinary day of about 200 papers scored for five participants took about 3% of its weekly limit with one-pass scoring, and two passes take about a third of that. `CLAUDE.md` sets up the host computer, with a short `mh` command for these runs.
-7. **Optionally, go back in time:** `local_run.py -b` scores one earlier listing for participants with status `active`, and `-bb` keeps going until the usage limit stops it, back as far as you choose (arXiv began in 1991).
+In short (the details are in [RUNNING.md](RUNNING.md), Setting up a copy):
+
+1. **Make your copy** of this repository, and delete `tables/`.
+2. **Choose the listings** in `config-log.json`.
+3. **Set up the portfolios** from `portfolios-template/`: a private repository of their own, or, if your participants agree to public portfolios, a folder of your copy.
+4. **Make the page yours:** the viewer's wording, colors and icons, this README and `CLAUDE.md`.
+5. **Publish** the viewer on GitHub Pages.
+6. **Run it** each morning after arXiv's 20:00 ET announcement, from one host computer, through Claude Code on a Claude subscription whose terms allow this use, or through the Claude API. `CLAUDE.md` sets up the host computer.
+7. **Optionally, go back in time,** building a back catalog of earlier listings.
 
 Questions are welcome: kailicao@umich.edu.
 
@@ -99,6 +82,7 @@ The portfolio must stand on its own: it contains no scores, and everything in it
 - By default, papers are ranked by their average score over the participants shown, and participants by the rank correlation (ρ) of their scores with the average of the others'. Select a participant (column name) to sort papers by relevance to them and participants by similarity to them. Select a paper (title) to sort papers by similarity to it and participants by its relevance to them. Similarity is the correlation (r) of that day's scores.
 - **Top papers** (`<base>/top`) lists one participant's highest-scored papers over a range of listing dates (by default the past calendar month up to the latest table, top 50); other participants can be shown beside, with their scores for the same papers, and each listing date opens that day's heatmap. Its URL keeps the choice, as in `<base>/top#p=<pseudonym>&also=<others>&from=2026-09-12&to=2026-10-12&n=50`. Selecting a participant in the heatmap offers a link to their top papers up to that day.
 - Hover over an arXiv ID for its URL, or over a cell for its score. The selection is kept in the URL, so a view can be shared. Columns carry pseudonyms rather than names.
+- The tables behind the viewer are public Parquet files, which you can download and analyze with your own tools ([RESULTS.md](RESULTS.md), Using the tables).
 
 ### Scoring rubric
 
@@ -125,29 +109,7 @@ The anchors guide the model; they are not calibrated probabilities, so scores ra
 
 ---
 
-**In depth.** The sections below are for maintainers, and for anyone who wants the details. This is version 0.8 (DESIGN.md, Versions). [DESIGN.md](DESIGN.md) covers how MapHub works and why: the daily table, the table format, the viewer, the legacy survey, measurements and open questions.
-
-## Running locally
-
-Scoring needs the portfolios in `maphub-portfolios/` (Run your own MapHub, step 3). The maintainer runs MapHub from one host computer, set up as `CLAUDE.md` describes. The daily routine runs through Claude Code on whichever seat `claude` is signed in to (it must be installed and signed in), with the column of every participant scored daily (status active or no-legacy; backfills: active):
-
-```bash
-python scorer/local_run.py -l    # --latest, in the morning: score the current listing, push it with any waiting backfills
-python scorer/local_run.py -b    # --back: fill a missed day, else one listing further back; commit locally
-python scorer/local_run.py -bb   # --back-all: keep backfilling until the usage limit stops it
-python scorer/local_run.py -p    # --push: push waiting backfills when there is no new listing
-# add -y (--yes) to push without confirming the commit message
-```
-
-Every mode first finishes a day left unfinished (say by the usage limit). Each backfilled day is committed locally and waits; the next `--latest` or `--push` folds the waiting commits and the new table into one commit, keeping each table's provenance. Pushing a table starts "Publish viewer", which deploys the viewer and tables on GitHub Pages.
-
-The scorer can also be run directly, for example for a test; through Claude Code it scores only the columns named in `MAPHUB_OWN_PARTICIPANTS` (comma-separated pseudonyms; `local_run.py` sets it to every participant scored):
-
-```bash
-pip install -r scorer/requirements.txt
-MAPHUB_OWN_PARTICIPANTS=<pseudonym> python scorer/daily_table.py --test   # 5 papers of each listing
-python viewer/serve.py                   # viewer at http://localhost:8000/
-```
+**In depth.** The sections below are for participants drafting a portfolio and for anyone who wants the details. This is version 0.8 (DEVELOPMENT.md, Versions). [RUNNING.md](RUNNING.md) covers setting up a copy, participants and portfolios, the repositories, the runs and the configuration log, and the stages; [RESULTS.md](RESULTS.md) the tables, their format, the back catalogs and the viewer; [DEVELOPMENT.md](DEVELOPMENT.md) how the scoring works and why: the daily table, the prompts, the measurements and budget behind its choices, versions, plans and open questions.
 
 ## The portfolio-drafting prompt
 
@@ -188,35 +150,13 @@ Output only the portfolio, not your working publication list, and then list the 
 Then talk the draft through with me. Ask, one question at a time, about (a) papers you were unsure belong to the subject, (b) topic boundaries you were unsure about, and (c) anything in the documents that contradicts the publication record. Then help me condense the portfolio to about 1,500 words (3,000 for a group or collaboration) by proposing what to merge, shorten or cut. Revise until I say it is final.
 ```
 
-## Tables
-
-One Parquet file per announcement date and arXiv ID month, with one row per paper: an `id` column holding the part of the arXiv ID the folder does not supply (`02245` for 2610.02245), then one `uint8` column of scores per participant. Each paper is scored once and appears in exactly one file.
-
-```text
-tables/
-  2024-2026/                 three-year spans aligned with 1991
-    2610/                    arXiv ID month (YYMM)
-      2026-10-06.parquet     papers with 2610 IDs announced on Oct 6, 2026
-      2026-10-07.meta.json   metadata of papers DataCite lacks, only on days with any
-  index.json                 the dates with a table, by ID month
-  participants.json          who is active, and whose columns the viewer hides
-  empty.json                 the dates whose table is empty: no announcement (a holiday)
-```
-
-Parquet opens in Python, R, Julia, MATLAB and DuckDB, for example:
-
-```python
-import pandas as pd
-df = pd.read_parquet("tables/2024-2026/2610/2026-10-06.parquet")
-```
-
-The full format (old-style IDs, dates with two files, `index.json`, the metadata fallback) is in DESIGN.md, Table format. [`config-log.json`](config-log.json) records each change to the scoring setup (model, prompt version, listings, threshold and the like) with the date it takes effect, and each commit that adds or changes a table names the portfolios, the configuration entry and the columns behind it, so `git log -- <table>` gives the table's history (DESIGN.md, Configuration log).
-
 ## Repository layout
 
 | Path | Contents |
 | --- | --- |
-| `DESIGN.md` | how MapHub works and why: participants and portfolios, the daily table, measurements, the table format, the viewer, the legacy survey, plans and open questions |
+| `RUNNING.md` | setting up and running a MapHub: a copy step by step, participants and portfolios, repositories, runs and the configuration log, stages |
+| `RESULTS.md` | what a MapHub produces: using the tables, their format, the back catalogs (legacy survey), the web viewer |
+| `DEVELOPMENT.md` | how MapHub works and why: the daily table, the prompts, the measurements and budget, versions, plans and open questions |
 | `CLAUDE.md` | the operations file for an AI assistant: setting up the host computer and running MapHub day to day |
 | `config-log.json` | every scoring configuration, with the date it took effect |
 | `scorer/` | `daily_table.py`, which fetches a day's papers, scores them with Claude (through Claude Code or the API) and writes the tables; `local_run.py`, the daily routine around it |

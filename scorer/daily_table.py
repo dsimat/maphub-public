@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MapHub daily table: score one announcement day's new arXiv submissions.
 
-Design: DESIGN.md (section "Daily table").
+Design: DEVELOPMENT.md (section "Daily table").
 
     python scorer/daily_table.py                # the current listing
     python scorer/daily_table.py 2026-10-05     # same, but check the date first
