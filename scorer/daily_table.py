@@ -1185,13 +1185,14 @@ def publish_roster(tables: Path, portfolios: Path) -> None:
     })
 
 
-def summarize(scores_dir: Path) -> None:
-    """Usage of every request saved for the day (both passes, when there are two)."""
+def summarize(files: list[Path]) -> None:
+    """Usage of the saved requests behind this run's table (both passes, when there are
+    two). Files left in the work dir by a run under another prompt version are not counted."""
     total = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
     seconds = 0.0
     requests = 0
     equivalent = None
-    for f in scores_dir.rglob("chunk*.json"):
+    for f in files:
         saved = read_json(f)
         requests += 1
         for key in total:
@@ -1383,7 +1384,7 @@ def main() -> int:
             score_outlines(cfg, via, chunks, portfolios, outline_dir)
             left = [k for k, c in enumerate(chunks) if not outline_done(outline_dir, k, c, list(portfolios))]
             if left:
-                summarize(scores_dir)
+                summarize(sorted(outline_dir.glob("chunk*.json")))
                 log(f"Incomplete: {len(left)} outline requests failed; rerun to resume. No table written.")
                 return 2
             coarse: dict[str, dict[str, int]] = {}
@@ -1404,7 +1405,7 @@ def main() -> int:
                 jobs = [(who, k, c) for k, c in enumerate(full_chunks[who]) if not done(full_dir, who, k, c)]
                 run_jobs(full_dir, jobs, [papers_prefix(prompt, c) for c in full_chunks[who]],
                          {who: portfolios[who]}, {**cfg, "cache": False})
-            summarize(scores_dir)
+            summarize(sorted(outline_dir.glob("chunk*.json")) + sorted(full_dir.glob("*/chunk*.json")))
             left = [(w, k) for w in portfolios for k, c in enumerate(full_chunks[w]) if not done(full_dir, w, k, c)]
             if left:
                 log(f"Incomplete: {len(left)} full-portfolio requests failed; rerun to resume. No table written.")
@@ -1422,7 +1423,7 @@ def main() -> int:
             if skipped:
                 log(f"Resuming: {skipped} requests already saved, {len(jobs)} to go")
             run_jobs(scores_dir, jobs, prefixes, portfolios, cfg)
-            summarize(scores_dir)
+            summarize([f for who in portfolios for f in sorted((scores_dir / who).glob("chunk*.json"))])
             left = [(who, k) for k, c in enumerate(chunks) for who in portfolios if not done(scores_dir, who, k, c)]
             if left:
                 log(f"Incomplete: {len(left)} requests failed; rerun to resume. No table written.")

@@ -130,9 +130,41 @@ def pending() -> list[str]:
     return [m.strip() for m in log.split("\x00") if m.strip()]
 
 
+def date_span(dates: list[str]) -> str:
+    """Listing dates for a commit subject, newest first: each run of consecutive
+    weekdays as a range, the year once at the end (or after each run when the
+    years differ). ["2026-10-15", "2026-09-01", ..., "2026-09-07"] gives
+    "Oct 15, Sep 1–7, 2026"; weekends never have a listing, so they do not
+    break a run."""
+    days = sorted({dt.date.fromisoformat(d) for d in dates})
+    runs: list[list[dt.date]] = []
+    for day in days:
+        previous = runs[-1][-1] if runs else None
+        step = 3 if previous and previous.weekday() == 4 else 1  # Friday to Monday
+        if previous and (day - previous).days == step:
+            runs[-1].append(day)
+        else:
+            runs.append([day])
+    one_year = len({d.year for d in days}) == 1
+    year = lambda d: "" if one_year else f", {d.year}"
+    parts = []
+    for run in reversed(runs):
+        a, b = run[0], run[-1]
+        if a == b:
+            parts.append(f"{a:%b} {a.day}{year(a)}")
+        elif a.year != b.year:
+            parts.append(f"{a:%b} {a.day}, {a.year}–{b:%b} {b.day}, {b.year}")
+        elif a.month == b.month:
+            parts.append(f"{a:%b} {a.day}–{b.day}{year(b)}")
+        else:
+            parts.append(f"{a:%b} {a.day}–{b:%b} {b.day}{year(b)}")
+    return ", ".join(parts) + (f", {days[0].year}" if one_year else "")
+
+
 def combined(messages: list[str]) -> str:
-    """One message for several tables: a subject naming them, then each table's
-    provenance under its date. A single table keeps the scorer's message."""
+    """One message for several tables: a subject naming them (date_span), then each
+    table's provenance under its date, newest first. A single table keeps the
+    scorer's message."""
     if len(messages) == 1:
         return messages[0] + "\n"
     heads = [SUBJECT.match(m.splitlines()[0]) for m in messages]
@@ -140,8 +172,8 @@ def combined(messages: list[str]) -> str:
         raise RunError("an unpushed commit is not a table commit; push or fold it by hand")
     dates = [h.group(1) for h in heads]
     routes = sorted({h.group(2) for h in heads})
-    lines = [f"Tables for {', '.join(dates)} (via {', '.join(routes)})"]
-    for date, message in zip(dates, messages):
+    lines = [f"Tables for {date_span(dates)} (via {', '.join(routes)})"]
+    for date, message in sorted(zip(dates, messages), reverse=True):
         body = [l for l in message.splitlines()[1:] if l.strip()]
         lines += ["", date, *body]
     return "\n".join(lines) + "\n"
