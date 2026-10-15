@@ -223,18 +223,18 @@ After the minimal version works:
 
 ## Versions
 
-MapHub's versions are git tags, each on the last commit of its version, so a copy can say which version it started from. Versions 0.1–0.7 were tagged afterwards, on Oct 15, 2026, from the development history; each tag's message repeats its line below.
+MapHub's versions are git tags, each on the last commit of its version, so a copy can say which version it started from. Versions 0.1–0.7 were tagged afterwards, on Oct 15, 2026, from the development history; each tag's message gives its name and repeats its line below.
 
-| Version | Dates (2026) | What it brought |
-| --- | --- | --- |
-| `v0.1` | Oct 5 | The scorer and the heatmap viewer; titles and authors from DataCite; publishing on GitHub Pages |
-| `v0.2` | Oct 6–8 | Daily scoring by a scheduled API workflow; the Claude Code route; past listings and old-style IDs; participant statuses and hidden columns; each paper scored once; provenance in commit messages; the metadata fallback |
-| `v0.3` | Oct 8 | Local runs on a Claude Code seat, retiring the API workflow; papers ranked by average score; the viewer's own calendar; replies that skip papers kept and completed |
-| `v0.4` | Oct 10–11 | The host computer and `CLAUDE.md`; the `mh` options; backfills that finish unfinished days first; the no-legacy status; the icon |
-| `v0.5` | Oct 12 | Top papers, with other participants beside |
-| `v0.6` | Oct 13 | Listings as a setting; holidays; Run your own MapHub; the MIT License |
-| `v0.7` | Oct 14–15 | Two-pass scoring with the joint outline (prompt v1); portfolios in the standard format; short fold subjects |
-| `v0.8` | Oct 15 | Ready for copies: the README for first readers, the design and operations notes written for any MapHub, portfolios as their own repository or a folder, `portfolios-template/`, versions |
+| Version | Name | Dates (2026) | What it brought |
+| --- | --- | --- | --- |
+| `v0.1` | Scorer and viewer | Oct 5 | The scorer and the heatmap viewer; titles and authors from DataCite; publishing on GitHub Pages |
+| `v0.2` | Daily scoring | Oct 6–8 | Daily scoring by a scheduled API workflow; the Claude Code route; past listings and old-style IDs; participant statuses and hidden columns; each paper scored once; provenance in commit messages; the metadata fallback |
+| `v0.3` | Local runs | Oct 8 | Local runs on a Claude Code seat, retiring the API workflow; papers ranked by average score; the viewer's own calendar; replies that skip papers kept and completed |
+| `v0.4` | Host computer | Oct 10–11 | The host computer and `CLAUDE.md`; the `mh` options; backfills that finish unfinished days first; the no-legacy status; the icon |
+| `v0.5` | Top papers | Oct 12 | Top papers, with other participants beside |
+| `v0.6` | Run your own | Oct 13 | Listings as a setting; holidays; Run your own MapHub; the MIT License |
+| `v0.7` | Two passes | Oct 14–15 | Two-pass scoring with the joint outline (prompt v1); portfolios in the standard format; short fold subjects |
+| `v0.8` | Ready for copies | Oct 15 | The README for first readers, the design and operations notes written for any MapHub, portfolios as their own repository or a folder, `portfolios-template/`, versions |
 
 ## Sources
 
