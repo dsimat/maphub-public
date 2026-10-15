@@ -1,0 +1,6 @@
+{
+ "_about": "Current status of each participant, by pseudonym (the folder name). status: active (scored on each new listing and in the legacy survey, past listings), no-legacy (new listings only), paused or left (not scored). hidden: column hidden from the viewer (the tables are never changed). kind and since (the date of the entry's latest change) are for your records.",
+ "participants": {
+  "1234": {"kind": "individual", "status": "active", "hidden": false, "since": "2027-01-04"}
+ }
+}

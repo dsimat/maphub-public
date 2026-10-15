@@ -73,8 +73,9 @@ def rebuild_index() -> None:
 
 
 def sync() -> None:
-    """Bring both repos up to date; pending backfill commits are replayed on top."""
-    git(PORTFOLIOS, "pull", "-q", "--ff-only")
+    """Bring the repos up to date; pending backfill commits are replayed on top."""
+    if dtab.portfolios_repo(PORTFOLIOS)[1]:  # portfolios in a repository of their own
+        git(PORTFOLIOS, "pull", "-q", "--ff-only")
     if git(ROOT, "status", "--porcelain", "--untracked-files=no", "--", "tables"):
         raise RunError("tables/ has uncommitted changes; commit or discard them first")
     pulled = subprocess.run(["git", "-C", str(ROOT), "pull", "-q", "--rebase", "--autostash"], capture_output=True, text=True)

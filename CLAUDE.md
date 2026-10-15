@@ -1,40 +1,47 @@
-# maphub-public: operations notes for an AI assistant
+# MapHub: operations notes for an AI assistant
 
-This file tells an AI coding assistant how this MapHub is set up and run day to day; people can read it as a runbook too. Claude Code loads it automatically, since a file named `CLAUDE.md` is its convention. With another assistant (one that reads `AGENTS.md`, say), point it to this file. The steps name Claude Code, which KC uses, and another assistant follows them the same way; only the notes on Claude Code's `!` prompt are specific to it. The scoring itself is separate from the assistant: by default it calls Claude Code (`claude -p`), and with `--via api` the Claude API.
+This file tells an AI coding assistant how a MapHub is set up and run day to day; people can read it as a runbook too. Claude Code loads it automatically, since a file named `CLAUDE.md` is its convention. With another assistant (one that reads `AGENTS.md`, say), point it to this file. The steps name Claude Code, and another assistant follows them the same way; only the notes on Claude Code's `!` prompt are specific to it. The scoring itself is separate from the assistant: by default it calls Claude Code (`claude -p`), and with `--via api` the Claude API.
 
-MapHub, the MIDAS arXiv Preprint Hub: the scorer, the daily tables and the web viewer (see `README.md`; the design is in `DESIGN.md`). Its maintainer, Kaili Cao (KC), runs it every day from a dedicated computer that holds only this repo, with the private portfolios repo `maphub-portfolios/` inside it; code and documents are developed on KC's main computer. "The seat" below is the Claude subscription account that Claude Code is signed in to on that computer, which pays for the scoring.
+MapHub, the MIDAS arXiv Preprint Hub: the scorer, the daily tables and the web viewer (see `README.md`; the design is in `DESIGN.md`). The steps below hold for any MapHub; the values in them are the prototype's, this repository's, as examples: its maintainer is Kaili Cao, its main repository is `maphub-public` and its portfolios repository `maphub-portfolios`. A MapHub that copies this file replaces those values with its own (README, Run your own MapHub).
 
-This repo is public, and so is this file: nothing private goes here. It describes Kaili Cao's MapHub; a copy run by someone else replaces it with its own (README, Run your own MapHub).
+- **The maintainer** runs the MapHub: the daily runs, the portfolios and the participants. Ask the maintainer whenever a step below says so, and before anything that cannot be undone.
+- **The host computer** is the one computer that runs the scoring and pushes the tables. It holds the main repository, with the portfolios inside. Code and documents can be developed elsewhere (in the prototype, on the maintainer's main computer).
+- **The seat** is the Claude subscription account that Claude Code is signed in to on the host computer, which pays for the scoring.
 
-## Setting up a MapHub computer
+The main repository is public, and so is this file: nothing private goes here.
 
-KC clones this repo to `~/maphub-public` through VS Code (where he is signed in to GitHub), starts Claude Code in it from VS Code's terminal, and asks Claude to set up the computer. Claude Code and Anaconda are already installed. Claude then does the following, asking KC before installing anything:
+## Setting up the host computer
 
-1. **GitHub access.** VS Code passes KC's GitHub sign-in to git only in its own terminal. If a clone asks for credentials, stop and ask KC to start Claude Code from VS Code's terminal (or to sign in with `! gh auth login`).
-2. **The portfolios.** Clone the private portfolios repo inside this one (`.gitignore` leaves it out):
-   ```bash
-   git clone -q https://github.com/kailicao-lsap/maphub-portfolios.git ~/maphub-public/maphub-portfolios
-   ```
-3. **Git identity.** If `git config --global user.name` or `user.email` is empty, ask KC for the values; never guess them.
-4. **Python.** Install the scorer's packages (`anthropic`, `pyarrow`) for the Python that `python` runs, which should be Anaconda's: `python -m pip install -r ~/maphub-public/scorer/requirements.txt`.
-5. **Claude Code.** Confirm with KC that the signed-in account is the seat meant for MapHub: the scorer runs `claude -p` on whichever seat is signed in.
-6. **The `mh` command.** Create an executable `~/.local/bin/mh`, and check that `~/.local/bin` is on the search path both in a login shell and in Claude Code's `!` prompt:
+The maintainer clones the main repository to their home folder (in the prototype, `~/maphub-public`, through VS Code, where the maintainer is signed in to GitHub), starts Claude Code in it (in the prototype, from VS Code's terminal), and asks Claude to set up the computer. Claude Code and Python are installed (in the prototype, Anaconda's). Claude then does the following, asking the maintainer before installing anything:
+
+1. **GitHub access.** Clones and pushes need the maintainer's GitHub sign-in. VS Code, for one, passes it to git only in its own terminal; if a clone asks for credentials, stop and ask the maintainer to start Claude Code where they are signed in, or to sign in with `! gh auth login`.
+2. **The portfolios.** They live in `maphub-portfolios/` inside the main repository, in one of two ways (README, Run your own MapHub, step 3):
+   - **A private repository of their own** (the prototype's way): clone it inside the main one, where `.gitignore` leaves it out. In the prototype:
+     ```bash
+     git clone -q https://github.com/kailicao-lsap/maphub-portfolios.git ~/maphub-public/maphub-portfolios
+     ```
+   - **A folder of the main repository:** nothing to clone. The portfolios are then as public as the main repository; check with the maintainer that the participants agreed to that.
+
+   If neither exists yet, the maintainer creates it first, from `portfolios-template/`: a new private repository, or the folder in the main repository with the `maphub-portfolios/` line removed from `.gitignore`.
+3. **Git identity.** If `git config --global user.name` or `user.email` is empty, ask the maintainer for the values; never guess them.
+4. **Python.** Install the scorer's packages (`anthropic`, `pyarrow`) for the Python that `python` runs: `python -m pip install -r scorer/requirements.txt`.
+5. **Claude Code.** Confirm with the maintainer that the signed-in account is the seat meant for the MapHub: the scorer runs `claude -p` on whichever seat is signed in.
+6. **The `mh` command.** Create an executable `~/.local/bin/mh` that runs `scorer/local_run.py` in the main repository, and check that `~/.local/bin` is on the search path both in a login shell and in Claude Code's `!` prompt. In the prototype:
    ```bash
    #!/usr/bin/env bash
    # MapHub local runs: mh -l (latest), mh -b (back one day), mh -bb (back until the usage limit), mh -p (push)
    exec python "$HOME/maphub-public/scorer/local_run.py" "$@"
    ```
-7. **Report** what was done and what KC still has to do. No test runs are needed.
-
-Only one computer runs MapHub: once this one does, `mh` is removed from any other.
+7. **Report** what was done and what the maintainer still has to do. No test runs are needed.
 
 ## Running MapHub
 
-- **Commands.** `mh -l` (`--latest`) scores the current listing and pushes it with any waiting backfills; `mh -b` (`--back`) scores one listing and commits locally: first any weekday the morning runs missed, otherwise the weekday before the earliest table; `mh -bb` (`--back-all`) keeps backfilling until the usage limit stops it; `mh -p` (`--push`) pushes waiting backfills; `-y` (`--yes`) pushes without asking. Every mode first finishes a day left unfinished in `.work/`: a backfill day is committed locally, the latest listing committed and pushed. New listings get a column for every participant scored daily (status active or no-legacy), backfills for every participant with status active, all through Claude Code (`--via api` would use the Claude API instead). KC runs `mh -l` each morning (any time after arXiv's 20:00 ET announcement) and `mh -b` or `mh -bb` as his seat's usage allows, from VS Code's terminal, where his GitHub sign-in reaches git; `-bb` also spends the seat's weekly limit, so he chooses when to run it.
+- **Commands.** `mh -l` (`--latest`) scores the current listing and pushes it with any waiting backfills; `mh -b` (`--back`) scores one listing and commits locally: first any weekday the morning runs missed, otherwise the weekday before the earliest table; `mh -bb` (`--back-all`) keeps backfilling until the usage limit stops it; `mh -p` (`--push`) pushes waiting backfills; `-y` (`--yes`) pushes without asking. Every mode first finishes a day left unfinished in `.work/`: a backfill day is committed locally, the latest listing committed and pushed. New listings get a column for every participant scored daily (status active or no-legacy), backfills for every participant with status active, all through Claude Code (`--via api` would use the Claude API instead). The maintainer runs `mh -l` each morning (any time after arXiv's 20:00 ET announcement) and `mh -b` or `mh -bb` as the seat's usage allows, from a terminal where their GitHub sign-in reaches git; `-bb` also spends the seat's weekly limit, so the maintainer chooses when to run it.
 - **From Claude Code's `!` prompt.** `~/.bashrc` is not loaded there, which is why `mh` is a script and not a shell function. The confirmation question cannot be answered there: use `mh -p -y`, or run `mh -p` in a terminal. Commands longer than 2 minutes move to the background.
-- **Commits.** Table commits come only from `local_run.py`: one commit a day, folding waiting backfills with the latest listing, with the scorer's provenance message under each date (newest first) and no seat or usage details; the subject names the dates in short, newest first, with each run of consecutive weekdays as a range and the year once (`Tables for Oct 15, Sep 1–7, 2026 (via claude-code)`), and a fold made by hand follows the same form; the script shows the message and asks before pushing. Code and documentation are changed on KC's main computer, and any commit there is drafted and shown to KC first.
-- **New participants.** When a folder in `maphub-portfolios/` has a `portfolio.md` but no entry in `participants.json` (the scorer then warns and leaves it out), ask KC whether the participant joins the legacy survey of past listings (status `active`) or only new listings (status `no-legacy`); never assume. Then add the entry to maphub-portfolios' `participants.json` with a line in its `CHANGELOG.md`, and keep its README's "Who is who" table in step.
-- **Two computers, one repo.** The dedicated computer pushes tables; the main computer pushes code. `local_run.py` pulls before each run (and merges `tables/index.json` if needed); on the main computer, pull before editing (KC's sessions there start by pulling every repo).
+- **Commits.** Table commits come only from `local_run.py`: one commit a day, folding waiting backfills with the latest listing, with the scorer's provenance message under each date (newest first) and no seat or usage details, since the main repository is public; the subject names the dates in short, newest first, with each run of consecutive weekdays as a range and the year once (`Tables for Oct 15, Sep 1–7, 2026 (via claude-code)`), and a fold made by hand follows the same form; the script shows the message and asks before pushing. Commits go in the order things happened: tables scored before a code change are committed before it, with the message the code of their time writes. Code and documentation commits are drafted and shown to the maintainer first. A release is tagged in git (`v0.9`, …) once the maintainer agrees, gets a row in `DESIGN.md`, Versions, and updates the version named in the README's "In depth" line.
+- **Configuration changes.** An entry in `config-log.json` takes effect by the date a run starts (Eastern time). Date a new entry for the day it is committed unless the maintainer wants a later start, and tell the maintainer which runs it affects: an entry dated the next day leaves that evening's backfills on the old configuration.
+- **New participants.** When a folder in `maphub-portfolios/` has a `portfolio.md` but no entry in `participants.json` (the scorer then warns and leaves it out), ask the maintainer whether the participant joins the legacy survey of past listings (status `active`) or only new listings (status `no-legacy`); never assume. Then add the entry to `participants.json`, and keep any records the MapHub keeps beside it in step (in the prototype, a line in `CHANGELOG.md` and the README's "Who is who" table).
+- **Computers and maintainers.** Run a MapHub from one host computer: only it runs `mh` and pushes tables, so that no two runs score the same listing and table commits stay in order. Other computers, and other maintainers, change code and documents, and pull before editing. `local_run.py` pulls before each run (and merges `tables/index.json` if a table arrived from elsewhere). If the host computer changes, move `.work/` along with it or finish its days first, and remove `mh` from the old one. When several people maintain a MapHub, agree on who holds the host computer and who reviews portfolio changes.
 - **Resuming.** A run that stops (usage limit, a failed request) keeps every saved request in `.work/<date>/`; the next run of any mode finishes that day first, sending only the rest. Delete `.work/` only once its tables are pushed.
 - **Papers held for moderation.** A rebuilt (past) listing places them by submission time, so a backfilled day can have a second file in the next ID month (`2610/2026-09-28.parquet`); a later RSS listing that announces them skips them as already scored.
 - **Known arXiv and DataCite quirks.**

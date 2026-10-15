@@ -34,7 +34,7 @@ Steps:
   4. Resume. Each request's scores are saved as they arrive (outline chunks,
      then each participant's chunks); a rerun skips what is already saved. Parquet files are written only once all are done.
 
-Participants are the folders of the portfolios repo that hold a portfolio.md;
+Participants are the folders of maphub-portfolios/ that hold a portfolio.md;
 the folder name is the participant's pseudonym and column name.
 
 Two ways to send requests (--via):
@@ -87,7 +87,7 @@ ARXIV_PAUSE = 3.0  # arXiv API terms: at most one request every 3 seconds
 BUSY_WAITS = (30, 60, 120, 120)  # seconds before retrying a 429 or 503 reply: up to five tries
 DATACITE_URL = "https://api.datacite.org/dois"  # where the viewer gets titles and authors
 DATACITE_BATCH = 100  # DOIs per DataCite search, as in the viewer
-# How this MapHub names itself to arXiv and DataCite; a copy sets its own in .env.
+# How the MapHub names itself to arXiv and DataCite; each MapHub sets its own in .env.
 USER_AGENT_DEFAULT = "MapHub/0.1 (MIDAS arXiv Preprint Hub)"
 user_agent = lambda: os.environ.get("MAPHUB_USER_AGENT") or USER_AGENT_DEFAULT
 
@@ -515,7 +515,7 @@ def test_sample(papers: list[dict], per_listing: int = 5) -> list[dict]:
 def load_participants(folder: Path, legacy: bool = False) -> dict[str, str]:
     """Pseudonym -> portfolio text, for the participants to score.
 
-    participants.json in the portfolios repo gives each participant's status:
+    participants.json in maphub-portfolios/ gives each participant's status:
     "active" (scored daily and in the legacy survey, past listings), "no-legacy"
     (scored daily only), "paused" or "left" (not scored). With legacy=True (a past
     listing), only "active" participants are scored. A portfolio folder with no
@@ -552,7 +552,7 @@ def load_participants(folder: Path, legacy: bool = False) -> dict[str, str]:
 
 def outline(portfolio: str) -> str:
     """A portfolio's outline: its title, its Overview, and each topic's heading with
-    its Next and Expertise lines (PORTFOLIOS.md). It is cut at run time and never stored."""
+    its Next and Expertise lines (README.md, Writing a portfolio). It is cut at run time and never stored."""
     lines = portfolio.splitlines()
     out = [lines[0].strip()] if lines and lines[0].startswith("# ") else []
     overview = re.search(r"^## Overview[ \t]*\n(.*?)(?=^## |\Z)", portfolio, re.S | re.M)
@@ -573,7 +573,7 @@ def joint_outline(portfolios: dict[str, str]) -> str:
     for who, text in portfolios.items():
         cut = outline(text)
         if "Expertise:" not in cut:
-            log(f"Warning: {who}'s portfolio has no Expertise lines; its outline is thin (PORTFOLIOS.md)")
+            log(f"Warning: {who}'s portfolio has no Expertise lines; its outline is thin (README.md, Writing a portfolio)")
         parts.append(f'<portfolio subject="{who}">\n{cut}\n</portfolio>')
     return "\n\n".join(parts) + "\n"
 
@@ -1014,17 +1014,31 @@ def scored_elsewhere(tables: Path, date: dt.date, papers) -> set[str]:
     return {p["id"] for p in papers} & seen
 
 
+def portfolios_repo(portfolios: Path) -> tuple[Path, bool]:
+    """The git repository holding the portfolios, and whether it is their own.
+
+    The portfolios usually live in a private repository of their own, checked out
+    inside this one (and left out by .gitignore). A MapHub may instead keep them as a
+    folder of the main repository, if it is fine for them to be as visible as it is."""
+    top = subprocess.run(["git", "-C", str(portfolios), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode != 0:
+        raise MapHubError(f"{portfolios} is not in a git repository")
+    top_path = Path(top.stdout.strip()).resolve()
+    return top_path, top_path == portfolios.resolve()
+
+
 def check_portfolios(portfolios: Path) -> None:
     """A table's commit time identifies the portfolios behind it, so a run that
     writes tables must use portfolios that are committed and pushed."""
-    git = lambda *a: subprocess.run(["git", "-C", str(portfolios), *a], capture_output=True, text=True)
-    if git("rev-parse", "--git-dir").returncode != 0:
-        raise MapHubError(f"{portfolios} is not a git repository")
-    if git("status", "--porcelain").stdout.strip():
-        raise MapHubError("maphub-portfolios has uncommitted changes; commit and push them first")
-    ahead = git("rev-list", "--count", "@{u}..HEAD")
+    top, own = portfolios_repo(portfolios)
+    where = [] if own else ["--", str(portfolios.resolve().relative_to(top))]
+    git = lambda *a: subprocess.run(["git", "-C", str(top), *a], capture_output=True, text=True)
+    if git("status", "--porcelain", *where).stdout.strip():
+        raise MapHubError(f"{portfolios.name} has uncommitted changes; commit and push them first")
+    ahead = git("rev-list", "--count", "@{u}..HEAD", *where)
     if ahead.returncode == 0 and ahead.stdout.strip() != "0":
-        raise MapHubError("maphub-portfolios has unpushed commits; push them first")
+        raise MapHubError(f"{portfolios.name} has unpushed commits; push them first")
 
 
 def write_tables(tables: Path, date: dt.date, papers, scores: dict[str, dict[str, int]]) -> list[Path]:
@@ -1221,8 +1235,10 @@ def write_commit_message(args, date, cfg, via, columns, n_papers, n_skipped, n_m
     """
     head = subprocess.run(["git", "-C", str(args.portfolios), "rev-parse", "--short", "HEAD"],
                           capture_output=True, text=True).stdout.strip() or "unknown"
+    top, own = portfolios_repo(args.portfolios)
+    source = f"{args.portfolios.name} {head}" if own else f"{args.portfolios.name}/ in {top.name} {head}"
     lines = [f"Table for {date.isoformat()} (via {via})", "",
-             f"Portfolios: maphub-portfolios {head}",
+             f"Portfolios: {source}",
              f"Configuration: entry effective {cfg['effective']} ({cfg['model']}, "
              f"effort {cfg.get('effort') or 'default'}, prompt {cfg['prompt']})",
              f"Columns: {', '.join(columns)}",

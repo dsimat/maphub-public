@@ -4,7 +4,8 @@
 .env
 .env.*
 
-# Private portfolios repo, checked out inside this one
+# Portfolios in a private repository of their own, checked out inside this one;
+# a MapHub that keeps them as a folder of this repository removes this line
 maphub-portfolios/
 
 # Saved papers and scores for resuming runs
