@@ -162,9 +162,17 @@ def date_span(dates: list[str]) -> str:
     return ", ".join(parts) + (f", {days[0].year}" if one_year else "")
 
 
+SHARED = ("Portfolios:", "Configuration:", "Columns:")  # provenance lines a group of tables shares
+PAPERS = re.compile(r"^Papers: (\d+)(?: \((\d+) already scored on another date, left out\))?$")
+PROMOTED = re.compile(r"^Full portfolio \(outline score (\d+) or more\): (.*)$")
+
+
 def combined(messages: list[str]) -> str:
-    """One message for several tables: a subject naming them (date_span), then each
-    table's provenance under its date, newest first. A single table keeps the
+    """One message for several tables: a subject naming them (date_span), then their
+    provenance by group, newest first. Tables with the same portfolios, configuration
+    and columns form one group under its dates (date_span), with the papers and the
+    full-pass counts summed; a line only one table has (papers left out as already
+    scored, a note, a metadata fallback) keeps its date. A single table keeps the
     scorer's message."""
     if len(messages) == 1:
         return messages[0] + "\n"
@@ -173,10 +181,42 @@ def combined(messages: list[str]) -> str:
         raise RunError("an unpushed commit is not a table commit; push or fold it by hand")
     dates = [h.group(1) for h in heads]
     routes = sorted({h.group(2) for h in heads})
-    lines = [f"Tables for {date_span(dates)} (via {', '.join(routes)})"]
-    for date, message in sorted(zip(dates, messages), reverse=True):
+    groups: dict[tuple, list[tuple[str, list[str]]]] = {}
+    for head, message in zip(heads, messages):
         body = [l for l in message.splitlines()[1:] if l.strip()]
-        lines += ["", date, *body]
+        key = (head.group(2), *(l for l in body if l.startswith(SHARED)))
+        groups.setdefault(key, []).append((head.group(1), body))
+    lines = [f"Tables for {date_span(dates)} (via {', '.join(routes)})"]
+    for key, tables in sorted(groups.items(), key=lambda g: max(d for d, _ in g[1]), reverse=True):
+        tables.sort(reverse=True)
+        if len(tables) == 1:
+            date, body = tables[0]
+            lines += ["", date, *body]
+            continue
+        papers = skipped = 0
+        threshold, promoted, own = None, {}, []
+        for date, body in tables:
+            for l in body:
+                if l.startswith(SHARED):
+                    continue
+                if m := PAPERS.match(l):
+                    papers += int(m.group(1))
+                    if m.group(2):
+                        skipped += int(m.group(2))
+                        own.append(f"{date}: {m.group(2)} papers already scored on another date, left out")
+                elif m := PROMOTED.match(l):
+                    threshold = m.group(1)
+                    for item in m.group(2).split(", "):
+                        who, n = item.rsplit(" ", 1)
+                        promoted[who] = promoted.get(who, 0) + int(n)
+                else:
+                    own.append(f"{date}: {l}")
+        lines += ["", f"{date_span([d for d, _ in tables])} ({len(tables)} tables)", *key[1:],
+                  f"Papers: {papers}" + (f" ({skipped} already scored on another date, left out)" if skipped else "")]
+        if promoted:
+            lines.append(f"Full portfolio (outline score {threshold} or more): "
+                         + ", ".join(f"{w} {promoted[w]}" for w in sorted(promoted)))
+        lines += own
     return "\n".join(lines) + "\n"
 
 

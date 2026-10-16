@@ -101,7 +101,7 @@ The anchors guide the model; they are not calibrated probabilities, so scores ra
 ### Terms
 
 - **Listing:** the new submissions arXiv announces for a date, Monday to Friday, at 20:00 ET the evening before; a table is named by its listing date.
-- **Backfill:** scoring a past listing, rebuilt from the arXiv API; the back catalog of past listings is the legacy survey.
+- **Backfill:** scoring a past listing, rebuilt from arXiv's records by submission time; the back catalog of past listings is the legacy survey.
 - **Status:** active (scored on new listings and backfills), no-legacy (new listings only), paused or left (not scored).
 - **Maintainer:** whoever runs a MapHub: the daily runs, the portfolios and the participants.
 - **Host computer:** the one computer that runs a MapHub's scoring and pushes its tables.

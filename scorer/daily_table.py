@@ -14,8 +14,10 @@ Steps:
   1. Fetch. The arXiv API cannot query by announcement date, so the current
      listing's new submissions (no cross-lists, no replacements) are read from
      arXiv's RSS feed, and their metadata then comes from the arXiv API in one
-     query. A past listing is rebuilt from the API by submission time: the
-     window between two 14:00 ET deadlines that the listing covers. Papers held for
+     query. A past listing is rebuilt by submission time, the window between two
+     14:00 ET deadlines that the listing covers, from a local cache of arXiv's
+     OAI-PMH records (harvested once by set and topped up; the arXiv API, one query
+     per category and listing, is the fallback). Papers held for
      moderation are placed by submission, not announcement: they are missing
      from the listing that announced them (4 of 345 on Oct 6, 2026) and
      appear in their submission window's listing instead. The papers are saved in the work dir, so a rerun still
@@ -83,6 +85,11 @@ ROOT = Path(__file__).resolve().parent.parent  # the maphub repo
 
 RSS_BASE = "https://rss.arxiv.org/rss/"  # + the listings, joined by "+"
 API_URL = "https://export.arxiv.org/api/query"
+OAI_URL = "https://oaipmh.arxiv.org/oai"  # arXiv's interface for bulk metadata
+OAI_CACHE = ROOT / ".cache" / "oai"  # harvested records, by set and submission month (not in git)
+OAI_EXTEND_DAYS = 30  # a cache extended backwards grows by at least this many days
+OAI_SETTLE_DAYS = 3  # a window counts as covered once harvested this many days after it ends
+OAI_NS = {"oai": "http://www.openarchives.org/OAI/2.0/", "raw": "http://arxiv.org/OAI/arXivRaw/"}
 ARXIV_PAUSE = 3.0  # arXiv API terms: at most one request every 3 seconds
 BUSY_WAITS = (30, 60, 120, 120)  # seconds before retrying a 429 or 503 reply: up to five tries
 DATACITE_URL = "https://api.datacite.org/dois"  # where the viewer gets titles and authors
@@ -423,7 +430,7 @@ def listing_window(date: dt.date) -> tuple[dt.datetime, dt.datetime]:
     return at(start_day), at(end_day)
 
 
-def fetch_past_listing(date: dt.date) -> list[dict]:
+def fetch_past_listing_api(date: dt.date) -> list[dict]:
     """Rebuild a past listing's new submissions from the arXiv API by submission time."""
     start, end = listing_window(date)
     stamp = lambda t: t.strftime("%Y%m%d%H%M")
@@ -455,6 +462,134 @@ def fetch_past_listing(date: dt.date) -> list[dict]:
     return papers
 
 
+# Past listings from OAI-PMH. A harvest selects records by the date they last
+# changed, so a harvest from day F to day T holds every paper submitted on or
+# after F (as of T): a later replacement only moves a record's datestamp forward.
+# The cache keeps one such span per set, extended backwards with a harvest that
+# ends where the span begins, and forwards with one from its last harvest day.
+OAI_GROUPS = {"astro-ph", "cond-mat", "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th", "math-ph",
+              "nlin", "nucl-ex", "nucl-th", "physics", "quant-ph"}  # archives in OAI's physics set
+
+
+def oai_set(listing: str) -> str:
+    """The OAI-PMH set of a listing: astro-ph -> physics:astro-ph, cs.AI -> cs:cs:AI."""
+    archive, _, sub = listing.partition(".")
+    group = "physics" if archive in OAI_GROUPS else archive
+    if group == "physics":
+        return f"physics:{archive}" + (f":{sub}" if sub else "")
+    return group + (f":{archive}:{sub}" if sub else "")
+
+
+def oai_record(rec) -> dict | None:
+    """One arXivRaw record -> {id, title, authors, abstract, primary, submitted}."""
+    raw = rec.find("oai:metadata/raw:arXivRaw", OAI_NS)
+    if raw is None:  # a deleted record
+        return None
+    v1 = raw.find("raw:version[@version='v1']/raw:date", OAI_NS)
+    if v1 is None:
+        return None
+    submitted = email.utils.parsedate_to_datetime(v1.text).astimezone(dt.timezone.utc)
+    authors = re.split(r",\s*|\s+and\s+", clean(raw.findtext("raw:authors", "", OAI_NS)))
+    return {
+        "id": clean(raw.findtext("raw:id", "", OAI_NS)),
+        "title": clean(raw.findtext("raw:title", "", OAI_NS)),
+        "authors": [a for a in authors if a],
+        "abstract": clean(raw.findtext("raw:abstract", "", OAI_NS)),
+        "primary": (raw.findtext("raw:categories", "", OAI_NS).split() or [""])[0],
+        "submitted": submitted.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def oai_harvest(setspec: str, frm: dt.date, until: dt.date | None) -> int:
+    """Harvest a set's records changed from `frm` (to `until`, or today) into the cache."""
+    folder = OAI_CACHE / setspec.replace(":", "_")
+    folder.mkdir(parents=True, exist_ok=True)
+    params = {"verb": "ListRecords", "metadataPrefix": "arXivRaw", "set": setspec, "from": frm.isoformat()}
+    if until:
+        params["until"] = until.isoformat()
+    log(f"  harvesting {setspec} records changed {frm}–{until or 'today'} from arXiv OAI-PMH")
+    calls = count = 0
+    while True:
+        time.sleep(ARXIV_PAUSE)
+        root = ET.fromstring(http_get(f"{OAI_URL}?{urllib.parse.urlencode(params)}"))
+        calls += 1
+        error = root.find("oai:error", OAI_NS)
+        if error is not None:
+            if error.get("code") == "noRecordsMatch":
+                break
+            raise MapHubError(f"OAI-PMH error for {setspec}: {error.get('code')}: {clean(error.text)}")
+        by_month: dict[str, list[str]] = {}
+        for rec in root.iterfind("oai:ListRecords/oai:record", OAI_NS):
+            paper = oai_record(rec)
+            if paper:
+                by_month.setdefault(paper["submitted"][:7], []).append(json.dumps(paper, ensure_ascii=False))
+                count += 1
+        for month, lines in by_month.items():
+            with open(folder / f"{month}.jsonl", "a", encoding="utf-8") as out:
+                out.write("\n".join(lines) + "\n")
+        token = clean(root.findtext("oai:ListRecords/oai:resumptionToken", "", OAI_NS))
+        if not token:
+            break
+        params = {"verb": "ListRecords", "resumptionToken": token}
+    log(f"    {count} records in {calls} requests")
+    return calls
+
+
+def oai_cover(setspec: str, start: dt.datetime, end: dt.datetime) -> None:
+    """Make sure the cache holds every paper of `setspec` submitted in [start, end)."""
+    state_path = OAI_CACHE / "state.json"
+    state = read_json(state_path) if state_path.exists() else {}
+    span = state.get(setspec)
+    today = dt.datetime.now(dt.timezone.utc).date()
+    need_from = start.date() - dt.timedelta(days=1)
+    if span is None:
+        oai_harvest(setspec, need_from, None)
+        span = {"from": need_from.isoformat(), "harvested": today.isoformat()}
+    else:
+        frm, harvested = dt.date.fromisoformat(span["from"]), dt.date.fromisoformat(span["harvested"])
+        if need_from < frm:
+            new_from = min(need_from, frm - dt.timedelta(days=OAI_EXTEND_DAYS))
+            oai_harvest(setspec, new_from, frm - dt.timedelta(days=1))
+            span["from"] = new_from.isoformat()
+        if harvested < end.date() + dt.timedelta(days=OAI_SETTLE_DAYS) and harvested < today:
+            oai_harvest(setspec, harvested, None)
+            span["harvested"] = today.isoformat()
+    state[setspec] = span
+    write_json(state_path, state)
+
+
+def fetch_past_listing_oai(date: dt.date) -> list[dict]:
+    """Rebuild a past listing's new submissions from the OAI-PMH cache by submission time."""
+    start, end = listing_window(date)
+    log(f"Rebuilding the listing dated {date} from the arXiv OAI-PMH cache: submissions "
+        f"{start.astimezone(EASTERN):%a %Y-%m-%d %H:%M} to {end.astimezone(EASTERN):%a %Y-%m-%d %H:%M} ET")
+    found: dict[str, dict] = {}
+    months = sorted({start.strftime("%Y-%m"), end.strftime("%Y-%m")})
+    for listing in LISTINGS:
+        setspec = oai_set(listing)
+        oai_cover(setspec, start, end)
+        for month in months:
+            path = OAI_CACHE / setspec.replace(":", "_") / f"{month}.jsonl"
+            if path.exists():
+                for line in open(path, encoding="utf-8"):
+                    paper = json.loads(line)
+                    found[paper["id"]] = paper  # later harvests win
+    when = lambda p: dt.datetime.fromisoformat(p["submitted"].replace("Z", "+00:00"))
+    papers = sorted((p for p in found.values() if listed_here(p) and start <= when(p) < end),
+                    key=lambda p: p["id"])
+    log(f"  {len(papers)} papers with {listings_text()} as primary")
+    return papers
+
+
+def fetch_past_listing(date: dt.date) -> tuple[list[dict], str]:
+    """A past listing from the OAI-PMH cache, or from the arXiv API if OAI-PMH fails."""
+    try:
+        return fetch_past_listing_oai(date), "arXiv OAI-PMH by submission time"
+    except (MapHubError, ET.ParseError) as e:
+        log(f"  OAI-PMH failed ({e}); falling back to the arXiv API")
+        return fetch_past_listing_api(date), "arXiv API by submission time"
+
+
 def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
     """Papers for `date` (default: the current listing), from the work dir if saved."""
     if date is not None:
@@ -463,13 +598,13 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
             log(f"Papers for {date}: loaded from {saved}")
             return date, read_json(saved)
         if date < dt.datetime.now(EASTERN).date():
-            papers = fetch_past_listing(date)
+            papers, source = fetch_past_listing(date)
             if not papers:
                 log(f"  no new submissions in {listings_text()} for the listing dated {date}")
             start, end = listing_window(date)
             write_json(saved, papers)
             write_json(saved.with_name("window.json"),
-                       {"source": "arXiv API by submission time", "from_utc": start.isoformat(),
+                       {"source": source, "from_utc": start.isoformat(),
                         "to_utc": end.isoformat()})
             return date, papers
     log(f"Fetching the current listing from {RSS_BASE + '+'.join(LISTINGS)}")
