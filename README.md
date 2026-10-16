@@ -23,7 +23,7 @@ In short (the details are in [RUNNING.md](RUNNING.md), Setting up a copy):
 3. **Set up the portfolios** from `portfolios-template/`: a private repository of their own, or, if your participants agree to public portfolios, a folder of your copy.
 4. **Make the page yours:** the viewer's wording, colors and icons, this README and `CLAUDE.md`.
 5. **Publish** the viewer on GitHub Pages.
-6. **Run it** each morning after arXiv's 20:00 ET announcement, from one host computer, through Claude Code on a Claude subscription whose terms allow this use, or through the Claude API. `CLAUDE.md` sets up the host computer.
+6. **Run it** each morning after arXiv's 20:00 ET announcement, from one host computer, through Claude Code on a Claude subscription whose terms allow this use, or through the Claude API. `CLAUDE.md` sets up the host computer. Once it works, `mh -d` can run the routine unattended on a computer that never sleeps.
 7. **Optionally, go back in time,** building a back catalog of earlier listings.
 
 Questions are welcome: kailicao@umich.edu.
@@ -109,7 +109,7 @@ The anchors guide the model; they are not calibrated probabilities, so scores ra
 
 ---
 
-**In depth.** The sections below are for participants drafting a portfolio and for anyone who wants the details. This is version 0.8 (DEVELOPMENT.md, Versions). [RUNNING.md](RUNNING.md) covers setting up a copy, participants and portfolios, the repositories, the runs and the configuration log, and the stages; [RESULTS.md](RESULTS.md) the tables, their format, the back catalogs and the viewer; [DEVELOPMENT.md](DEVELOPMENT.md) how the scoring works and why: the daily table, the prompts, the measurements and budget behind its choices, versions, plans and open questions.
+**In depth.** The sections below are for participants drafting a portfolio and for anyone who wants the details. This is version 0.8 (DEVELOPMENT.md, Versions). [RUNNING.md](RUNNING.md) covers setting up a copy, participants and portfolios, the repositories, the runs and the configuration log, running unattended, and the stages; [RESULTS.md](RESULTS.md) the tables, their format, the back catalogs and the viewer; [DEVELOPMENT.md](DEVELOPMENT.md) how the scoring works and why: the daily table, the prompts, the measurements and budget behind its choices, versions, plans and open questions.
 
 ## The portfolio-drafting prompt
 
@@ -154,7 +154,7 @@ Then talk the draft through with me. Ask, one question at a time, about (a) pape
 
 | Path | Contents |
 | --- | --- |
-| `RUNNING.md` | setting up and running a MapHub: a copy step by step, participants and portfolios, repositories, runs and the configuration log, stages |
+| `RUNNING.md` | setting up and running a MapHub: a copy step by step, participants and portfolios, repositories, runs and the configuration log, running unattended, stages |
 | `RESULTS.md` | what a MapHub produces: using the tables, their format, the back catalogs (legacy survey), the web viewer |
 | `DEVELOPMENT.md` | how MapHub works and why: the daily table, the prompts, the measurements and budget, versions, plans and open questions |
 | `CLAUDE.md` | the operations file for an AI assistant: setting up the host computer and running MapHub day to day |

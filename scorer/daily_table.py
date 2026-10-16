@@ -626,10 +626,17 @@ def get_papers(work: Path, date: dt.date | None) -> tuple[dt.date, list[dict]]:
         write_json(saved, [])
         return listing_date, []
     log(f"Listing dated {listing_date}: {len(ids)} new submissions; fetching metadata")
-    meta = fetch_metadata(ids, required=False)
+    try:
+        meta = fetch_metadata(ids, required=False)
+    except MapHubError as e:
+        # The API refuses (a rate limit on this computer can last hours): the feed has
+        # every paper's title, authors, abstract and primary category too.
+        log(f"  the arXiv API failed ({e}); taking all metadata from the RSS feed")
+        meta = {}
     if lacking := [i for i in ids if i not in meta]:
         # The API's index occasionally lags behind the listing (2610.09954 on Oct 8, 2026).
-        log(f"  taking {len(lacking)} papers from the RSS feed, which the API lacks: {', '.join(lacking)}")
+        if meta:
+            log(f"  taking {len(lacking)} papers from the RSS feed, which the API lacks: {', '.join(lacking)}")
         meta.update({i: rss[i] for i in lacking})
     papers = [meta[i] for i in ids if listed_here(meta[i])]
     if len(papers) < len(ids):

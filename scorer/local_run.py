@@ -8,6 +8,10 @@
     mh -bb, --back-all   backfill listing after listing until the usage limit stops it
     mh -p, --push        push waiting backfills without a new listing
     mh -y, --yes         push without asking to confirm the commit message
+    mh -d, --drive       run the daily routine unattended (scorer/driver.py): mh -l each
+                         weekday morning, mh -bb the rest of the time
+    mh --status, --hold, --stop    the driver's state; keep a listing under review from
+                         being pushed; stop the driver after the current day
     --via api            score through the Claude API (ANTHROPIC_API_KEY in .env)
                          instead of Claude Code
 
@@ -303,10 +307,23 @@ def main() -> int:
                       help="backfill one listing; -bb: until the usage limit stops it")
     mode.add_argument("--back-all", action="store_true", help="the same as -bb")
     mode.add_argument("-p", "--push", action="store_true", help="push waiting backfills")
+    mode.add_argument("-d", "--drive", action="store_true", help="run the daily routine unattended (scorer/driver.py)")
+    mode.add_argument("--status", action="store_true", help="what the driver is doing")
+    mode.add_argument("--hold", action="store_true", help="keep the listing under review from being pushed")
+    mode.add_argument("--stop", action="store_true", help="stop the driver after the current day")
     ap.add_argument("-y", "--yes", action="store_true", help="push without asking to confirm the message")
     ap.add_argument("--via", choices=["claude-code", "api"], default="claude-code",
                     help="score through Claude Code (default) or the Claude API (ANTHROPIC_API_KEY in .env)")
     args = ap.parse_args()
+    if args.drive or args.status or args.hold or args.stop:
+        import driver
+        if args.drive:
+            return driver.drive()
+        if args.status:
+            return driver.report()
+        if args.hold:
+            return driver.flag(driver.HOLD, "Held: the driver will not push the listing under review; push it with `mh -p`.")
+        return driver.flag(driver.STOP, "The driver stops after the current day; `mh --status` shows when.")
     global VIA
     VIA = args.via
     if args.back_all:
@@ -331,6 +348,9 @@ def main() -> int:
                 print(f"Committed locally: {commit_locally()}")
                 done += 1
                 if args.back == 1:
+                    break
+                if (ROOT / ".cache" / "driver" / "yield").exists() or (ROOT / ".cache" / "driver" / "stop").exists():
+                    print("Stopping the backfill: the driver needs the seat (morning listing, or a stop).")
                     break
             print(f"{len(pending())} commit(s) wait for the next --latest or --push.")
         elif args.push:
